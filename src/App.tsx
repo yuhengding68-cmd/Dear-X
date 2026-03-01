@@ -331,7 +331,7 @@ export default function App() {
                 <ul className="space-y-4 mb-10">
                   {[
                     { text: 'Instant Withdrawals to Bank/PayPal', icon: <TrendingUp className="w-4 h-4 text-green-400" /> },
-                    { text: 'Keep up to 80% of Gift Value', icon: <DollarSign className="w-4 h-4 text-brand-light-purple" /> },
+                    { text: 'Keep up to 50% of Gift Value', icon: <DollarSign className="w-4 h-4 text-brand-light-purple" /> },
                     { text: '100% Secure Transactions', icon: <Shield className="w-4 h-4 text-blue-400" /> }
                   ].map((item, i) => (
                     <li key={i} className="flex items-center gap-3 text-white/90 font-medium">
@@ -342,7 +342,10 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
-                <button className="px-8 py-4 rounded-full bg-white text-black font-bold hover:scale-105 transition-transform shadow-[0_0_20px_rgba(255,255,255,0.2)]">
+                <button 
+                  onClick={() => setIsDownloadOpen(true)}
+                  className="px-8 py-4 rounded-full bg-white text-black font-bold hover:scale-105 transition-transform shadow-[0_0_20px_rgba(255,255,255,0.2)]"
+                >
                   Start Earning Today
                 </button>
               </div>
@@ -394,7 +397,10 @@ export default function App() {
                     </div>
                   </div>
                   
-                  <button className="w-full py-3 rounded-xl bg-brand-light-purple text-white font-bold hover:bg-brand-light-purple/90 transition-colors shadow-lg shadow-brand-light-purple/20">
+                  <button 
+                    onClick={() => setIsDownloadOpen(true)}
+                    className="w-full py-3 rounded-xl bg-brand-light-purple text-white font-bold hover:bg-brand-light-purple/90 transition-colors shadow-lg shadow-brand-light-purple/20"
+                  >
                     Cash Out Now
                   </button>
                 </div>
