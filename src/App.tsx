@@ -237,7 +237,7 @@ export default function App() {
                   </div>
                   
                   <div className="w-full space-y-4 mb-6">
-                    <div className="w-full py-4 rounded-2xl bg-[#333333] text-white/80 flex items-center justify-center gap-2 font-medium">
+                    <div className="w-full py-4 rounded-2xl bg-white text-black flex items-center justify-center gap-2 font-medium">
                       <Mail className="w-5 h-5" /> Continue with Email
                     </div>
                   </div>
