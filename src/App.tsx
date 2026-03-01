@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Heart, MessageCircle, DollarSign, Shield, Smartphone, ArrowRight, Star, Check, Wallet, TrendingUp } from 'lucide-react';
+import { Heart, MessageCircle, DollarSign, Shield, Smartphone, ArrowRight, Star, Check, Wallet, TrendingUp, Mail } from 'lucide-react';
 import { TermsModal, PrivacyModal, AboutUsModal, CareersModal, PressModal, ContactModal, CookiePolicyModal, SafetyTipsModal } from './components/LegalModals';
 import { DownloadModal } from './components/DownloadModal';
 
@@ -225,30 +225,34 @@ export default function App() {
               <div className="absolute inset-0 bg-gradient-to-tr from-[#4a60ff] to-[#a044ff] rounded-[3rem] blur-3xl opacity-30 animate-pulse" />
               
               <div className="relative bg-[#050505] border border-white/10 rounded-[3rem] p-2 shadow-2xl">
-                <div className="bg-hero-gradient rounded-[2.5rem] overflow-hidden relative aspect-[9/19] flex flex-col items-center justify-center p-8 text-center">
+                <div className="bg-gradient-to-b from-[#0a1128] via-[#050505] to-[#2a1140] rounded-[2.5rem] overflow-hidden relative aspect-[9/19] flex flex-col items-center justify-center p-6 text-center">
                   <div className="absolute top-0 inset-x-0 h-6 bg-black/20 backdrop-blur-md" /> {/* Notch */}
                   
-                  <div className="mb-12 scale-150">
-                    <Logo />
+                  <div className="flex-1 flex flex-col items-center justify-center w-full">
+                    <div className="mb-8 scale-150">
+                      <Logo />
+                    </div>
+                    
+                    <p className="text-white/80 font-medium mb-12">Connect. Gift. Vibe.</p>
                   </div>
                   
-                  <p className="text-white/80 font-medium mb-8">Connect. Gift. Vibe.</p>
-                  
-                  <div className="w-full space-y-4">
-                    <div className="w-full py-3.5 rounded-xl bg-gradient-to-r from-[#4a60ff] to-[#a044ff] flex items-center justify-center gap-2 font-medium">
-                      <Smartphone className="w-4 h-4" /> Continue with Phone
-                    </div>
-                    <div className="w-full py-3.5 rounded-xl bg-white text-black flex items-center justify-center gap-2 font-medium">
-                      Continue with Apple
-                    </div>
-                    <div className="w-full py-3.5 rounded-xl bg-[#2c303a] flex items-center justify-center gap-2 font-medium">
-                      Continue with Google
+                  <div className="w-full space-y-4 mb-6">
+                    <div className="w-full py-4 rounded-2xl bg-[#333333] text-white/80 flex items-center justify-center gap-2 font-medium">
+                      <Mail className="w-5 h-5" /> Continue with Email
                     </div>
                   </div>
                   
-                  <p className="text-[10px] text-white/40 mt-8 max-w-[200px]">
-                    By continuing, you agree to our <button onClick={() => setIsTermsOpen(true)} className="underline hover:text-white">Terms of Service</button> and <button onClick={() => setIsPrivacyOpen(true)} className="underline hover:text-white">Privacy Policy</button>.
-                  </p>
+                  <div className="w-full bg-[#111115] rounded-2xl p-4 text-left border border-white/5">
+                    <div className="flex items-start gap-3 mb-4">
+                      <div className="w-5 h-5 rounded border border-white/30 mt-0.5 flex-shrink-0" />
+                      <p className="text-[11px] text-white/60 leading-tight">
+                        I have read and agree to the <button onClick={() => setIsTermsOpen(true)} className="underline hover:text-white">Terms of Service (EULA)</button> and <button onClick={() => setIsPrivacyOpen(true)} className="underline hover:text-white">Privacy Policy</button>.
+                      </p>
+                    </div>
+                    <p className="text-[11px] text-white/40 leading-tight">
+                      <strong className="text-white/60">DearX has a zero-tolerance policy</strong> for objectionable content or abusive users. Violators will be permanently banned.
+                    </p>
+                  </div>
                 </div>
               </div>
             </motion.div>
