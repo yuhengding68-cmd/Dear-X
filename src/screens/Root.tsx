@@ -13,6 +13,7 @@ import { LegalScreen } from './LegalScreen';
 import { OnboardingScreen } from './OnboardingScreen';
 import { PolicyScreen } from './PolicyScreen';
 import { SafetyScreen } from './SafetyScreen';
+import { ProfileScreen } from './ProfileScreen';
 import { SettingsScreen } from './SettingsScreen';
 
 const TABS: Tab[] = ['discover', 'matches', 'chats', 'creators', 'safety'];
@@ -54,7 +55,7 @@ export function Root() {
       { key: 'discover', active: false, onClick: comingSoon, color: 'text-brand-purple bg-brand-purple/10', dot: 'bg-brand-purple', icon: <Compass className="w-6 h-6" /> },
       { key: 'messages', active: tab === 'chats', onClick: () => app.go({ name: 'main', tab: 'chats' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <MessageCircle className="w-6 h-6" /> },
       { key: 'wallet', active: false, onClick: comingSoon, color: 'text-brand-yellow bg-brand-yellow/10', dot: 'bg-brand-yellow', icon: <Wallet className="w-6 h-6" /> },
-      { key: 'profile', active: false, onClick: () => app.go({ name: 'settings' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <UserIcon className="w-6 h-6" /> },
+      { key: 'profile', active: tab === 'profile', onClick: () => app.go({ name: 'main', tab: 'profile' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <UserIcon className="w-6 h-6" /> },
     ];
     return (
       <div className="h-screen w-full flex flex-col bg-[#12122A] text-white overflow-hidden relative font-sans">
@@ -87,12 +88,13 @@ export function Root() {
         <main className="flex-1 flex flex-col relative z-10 overflow-hidden pt-16 pb-24">
           {app.notice ? <p className="px-4 pt-3 text-sm text-emerald-200">{app.notice}</p> : null}
           {app.error ? <p className="px-4 pt-3 text-sm text-red-300">{app.error}</p> : null}
-          <div className={tab === 'discover' ? 'flex-1 relative' : 'flex-1 overflow-y-auto'}>
+          <div className={tab === 'discover' || tab === 'profile' ? 'flex-1 relative min-h-0' : 'flex-1 overflow-y-auto'}>
             {tab === 'discover' ? <DiscoverScreen /> : null}
             {tab === 'matches' ? <MatchesScreen /> : null}
             {tab === 'chats' ? <ChatListScreen /> : null}
             {tab === 'creators' ? <CreatorListScreen /> : null}
             {tab === 'safety' ? <SafetyScreen /> : null}
+            {tab === 'profile' ? <ProfileScreen /> : null}
           </div>
         </main>
         <nav className="fixed bottom-0 left-0 right-0 h-20 glass-nav border-t border-white/5 flex items-center justify-around px-2 z-50 pb-2">

@@ -53,6 +53,8 @@ export interface Repository {
   getAgeGateDenied(): Promise<boolean>;
   rejectUnderage(dateOfBirth: string): Promise<void>;
   getMe(): Promise<PrivateUser | null>;
+  /** Public dating profile for the signed-in user. Null before onboarding. */
+  getMyProfile(): Promise<DatingProfile | null>;
   completeOnboarding(input: OnboardingInput): Promise<PrivateUser>;
   getDiscovery(): Promise<DatingProfile[]>;
   likeUser(toUserId: string): Promise<LikeOutcome>;

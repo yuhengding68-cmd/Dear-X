@@ -193,6 +193,11 @@ export function createDemoRepository(): Repository {
       if (!session) return null;
       return state.users.find((user) => user.uid === session?.uid) ?? null;
     },
+    async getMyProfile() {
+      refresh();
+      if (!session) return null;
+      return profileFor(state, session.uid);
+    },
     async completeOnboarding(input: OnboardingInput) {
       try {
         state = completeOnboarding(state, uid(), input, nowIso());

@@ -163,6 +163,13 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
       const snap = await getDoc(doc(db, 'users', user.uid));
       return snap.exists() ? (snap.data() as PrivateUser) : null;
     },
+    async getMyProfile() {
+      await auth.authStateReady();
+      const user = auth.currentUser;
+      if (!user) return null;
+      const snap = await getDoc(doc(db, 'profiles', user.uid));
+      return snap.exists() ? (snap.data() as DatingProfile) : null;
+    },
     async completeOnboarding(input) {
       try {
         const result = await call<OnboardingInput, { user: PrivateUser }>('completeOnboarding')(input);
