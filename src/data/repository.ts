@@ -12,6 +12,7 @@ import type {
   CreatorStartInput,
   DataExport,
   DatingProfile,
+  PhotoVerificationQueueItem,
   Entitlement,
   KycSession,
   Match,
@@ -114,6 +115,11 @@ export interface Repository {
   listReportsForAdmin(): Promise<Report[]>;
   reviewReport(id: string, status: ReportStatus, note: string): Promise<void>;
   listPendingPostsForAdmin(): Promise<CreatorPost[]>;
+  startPhotoVerification(): Promise<{ attemptId: string; pose: string; storagePath: string }>;
+  submitPhotoVerification(input: { attemptId: string; storagePath: string; bytes: Uint8Array; contentType: string }): Promise<{ status: 'approved' | 'rejected' | 'pending_review'; pose: string }>;
+  listPhotoVerifications(): Promise<PhotoVerificationQueueItem[]>;
+  photoVerificationPreview(attemptId: string): Promise<string | null>;
+  reviewPhotoVerification(attemptId: string, action: 'approve' | 'reject'): Promise<void>;
   reviewPost(id: string, status: 'approved' | 'rejected', note: string): Promise<void>;
   resetDemo(): Promise<void>;
 }

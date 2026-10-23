@@ -59,6 +59,7 @@ import type {
   PurchaseInput,
   InboxItem,
   MyReportStatus,
+  PhotoVerificationQueueItem,
   PresenceView,
   Report,
   ReportInput,
@@ -741,6 +742,49 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
           status,
           note,
         });
+      } catch (error) {
+        throw asError(error, 'forbidden');
+      }
+    },
+    async startPhotoVerification() {
+      try {
+        const result = await call<Record<string, never>, { attemptId: string; pose: string; storagePath: string }>('startPhotoVerification')({});
+        return result.data;
+      } catch (error) {
+        throw asError(error, 'photo-verify');
+      }
+    },
+    async submitPhotoVerification(input) {
+      try {
+        const storage = getStorage(app);
+        await uploadBytes(ref(storage, input.storagePath), input.bytes, { contentType: input.contentType });
+        const result = await call<{ attemptId: string }, { status: 'approved' | 'rejected' | 'pending_review'; pose: string }>('submitPhotoVerification')({
+          attemptId: input.attemptId,
+        });
+        return result.data;
+      } catch (error) {
+        throw asError(error, 'photo-verify');
+      }
+    },
+    async listPhotoVerifications() {
+      try {
+        const result = await call<Record<string, never>, { items: PhotoVerificationQueueItem[] }>('listPhotoVerifications')({});
+        return result.data.items;
+      } catch (error) {
+        throw asError(error, 'forbidden');
+      }
+    },
+    async photoVerificationPreview(attemptId) {
+      try {
+        const result = await call<{ attemptId: string }, { imageBase64: string }>('photoVerificationPreview')({ attemptId });
+        return result.data.imageBase64;
+      } catch (error) {
+        throw asError(error, 'forbidden');
+      }
+    },
+    async reviewPhotoVerification(attemptId, action) {
+      try {
+        await call<{ attemptId: string; action: 'approve' | 'reject' }, { status: string }>('reviewPhotoVerification')({ attemptId, action });
       } catch (error) {
         throw asError(error, 'forbidden');
       }

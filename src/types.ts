@@ -51,6 +51,15 @@ export interface PrivateUser {
   ghostMode?: boolean;
   /** Server-written. Cleared while Ghost Mode is on. */
   lastSeenAt?: string | null;
+  /** Server-written timestamps for the photo-verification rate limit. */
+  photoVerifyAttempts?: number[];
+  /** Latest photo-verification result. No selfie bytes. */
+  photoVerification?: {
+    attemptId: string;
+    status: 'awaiting_upload' | 'pending_review' | 'approved' | 'rejected';
+    pose: string;
+    updatedAt: string;
+  };
 }
 
 export interface DatingProfile {
@@ -70,6 +79,14 @@ export interface DatingProfile {
   job?: string;
   /** Real-person (selfie) verification passed. Set by the server only. */
   verified?: boolean;
+}
+
+export interface PhotoVerificationQueueItem {
+  id: string;
+  uid: string;
+  displayName: string;
+  pose: string;
+  createdAt: string;
 }
 
 export interface Like {

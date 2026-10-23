@@ -26,6 +26,17 @@ import {
 } from '../../domain/profileEdit';
 import { makeInboxItem, nextLastSeen, normalizeAppPreferences, presenceFrom, type AppPreferences } from '../../domain/activity';
 import { normalizeDiscoverFilters, profileFitsDiscover, type DiscoverFilters } from '../../domain/discover';
+import {
+  auditLeaksImage,
+  decidePhotoAttempt,
+  demoFaceReading,
+  interpretFaceMatch,
+  isPhotoPose,
+  pickPose,
+  profileAfterMainPhotoChange,
+  selfieStoragePath,
+  verifiedFromDecision,
+} from '../../domain/photoVerification';
 import { isAccountBlocked, reportDueAt, reportSla, supportTicketInput, type ReportAction } from '../../domain/safetyQueue';
 import type {
   Balance,
@@ -50,7 +61,7 @@ import type {
   ReportSnapshot,
   SupportTicket,
 } from '../../types';
-import type { DemoState } from './state';
+import type { DemoPhotoAttempt, DemoPhotoAudit, DemoState } from './state';
 
 const DELETED = 'deleted-user';
 
@@ -600,7 +611,7 @@ export function submitProfileText(state: DemoState, uid: string, input: ProfileT
 }
 
 function withPhotos(state: DemoState, uid: string, profile: DatingProfile, photos: ProfilePhotoRecord[]): DemoState {
-  const published = projectPublicPhotos(profile, photos);
+  const published = profileAfterMainPhotoChange(profile, projectPublicPhotos(profile, photos));
   const existing = draftMap(state)[uid];
   const draft: ProfileEditorDraft = {
     photos,
@@ -687,6 +698,8 @@ export function deleteAccount(state: DemoState, uid: string): DemoState {
     kycSessions: state.kycSessions.filter((session) => session.userId !== uid),
     profileDrafts: Object.fromEntries(Object.entries(draftMap(state)).filter(([id]) => id !== uid)),
     inboxes: Object.fromEntries(Object.entries(state.inboxes ?? {}).filter(([id]) => id !== uid)),
+    photoAttempts: (state.photoAttempts ?? []).filter((item) => item.uid !== uid),
+    photoAudits: (state.photoAudits ?? []).filter((item) => item.uid !== uid),
   };
 }
 
@@ -838,6 +851,173 @@ export function reviewReport(state: DemoState, actorId: string, id: string, stat
     };
   }
   throw new Error('Choose a review status.');
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function photoAudit(attempt: DemoPhotoAttempt, decision: string, reasonCode: string, actorId: string, now: string): DemoPhotoAudit {
+  return {
+    id: `photo_audit_${attempt.id}_${decision}_${now}`,
+    attemptId: attempt.id,
+    uid: attempt.uid,
+    pose: attempt.pose,
+    decision,
+    reasonCode,
+    actorId,
+    createdAt: now,
+  };
+}
+
+function writePhotoUser(state: DemoState, uid: string, attempt: DemoPhotoAttempt, now: string): PrivateUser[] {
+  return state.users.map((user) =>
+    user.uid === uid
+      ? {
+          ...user,
+          photoVerification: { attemptId: attempt.id, status: attempt.status, pose: attempt.pose, updatedAt: now },
+        }
+      : user,
+  );
+}
+
+export function startPhotoVerification(state: DemoState, uid: string, now: string, roll: number) {
+  assertStanding(state, uid);
+  const user = requireUser(state, uid);
+  if (!user.onboardingComplete) throw new Error('Finish onboarding first.');
+  const profile = profileFor(state, uid);
+  if (!profile?.photoUrl) throw new Error('photo-required');
+  const open = (state.photoAttempts ?? []).find(
+    (item) => item.uid === uid && item.status === 'awaiting_upload' && Date.parse(now) - Date.parse(item.createdAt) < 5_000,
+  );
+  if (open) return { attempt: open, state };
+  const decision = decidePhotoAttempt(user.photoVerifyAttempts ?? [], Date.parse(now));
+  if (!decision.allowed) throw new Error('photo-verify-limited');
+  const attemptId = `pv${Math.abs(Math.floor(roll))}${Date.parse(now)}`.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+  const id = attemptId.length >= 8 ? attemptId : `pv_${Date.parse(now)}`;
+  if (!selfieStoragePath(uid, id)) throw new Error('photoId');
+  const pose = pickPose(roll);
+  const attempt: DemoPhotoAttempt = {
+    id,
+    uid,
+    pose,
+    status: 'awaiting_upload',
+    mainPhotoUrl: profile.photoUrl,
+    createdAt: now,
+  };
+  return {
+    attempt,
+    state: {
+      ...state,
+      users: state.users.map((item) =>
+        item.uid === uid
+          ? {
+              ...item,
+              photoVerifyAttempts: decision.next,
+              photoVerification: { attemptId: id, status: attempt.status, pose, updatedAt: now },
+            }
+          : item,
+      ),
+      photoAttempts: [attempt, ...(state.photoAttempts ?? [])],
+    },
+  };
+}
+
+export function submitPhotoVerification(state: DemoState, uid: string, attemptId: string, bytes: Uint8Array, now: string) {
+  assertStanding(state, uid);
+  const attempt = (state.photoAttempts ?? []).find((item) => item.id === attemptId && item.uid === uid);
+  if (!attempt || attempt.status !== 'awaiting_upload') throw new Error('photo-attempt');
+  const profile = profileFor(state, uid);
+  if (!profile?.photoUrl || profile.photoUrl !== attempt.mainPhotoUrl) throw new Error('photo-changed');
+  const verdict = interpretFaceMatch(demoFaceReading(bytes));
+  const approved = verifiedFromDecision(verdict.decision);
+  const status = verdict.decision === 'match' ? 'approved' : verdict.decision === 'mismatch' ? 'rejected' : 'pending_review';
+  const nextAttempt: DemoPhotoAttempt = {
+    ...attempt,
+    status,
+    decidedAt: status === 'pending_review' ? undefined : now,
+    imageBase64: status === 'pending_review' ? bytesToBase64(bytes) : undefined,
+  };
+  if (auditLeaksImage(photoAudit(nextAttempt, verdict.decision, verdict.reasonCode, 'system', now))) {
+    throw new Error('audit');
+  }
+  const profiles = state.profiles.map((item) => {
+    if (item.uid !== uid) return item;
+    if (approved) return { ...item, verified: true };
+    const rest = { ...item };
+    delete rest.verified;
+    return rest;
+  });
+  const audit = photoAudit(nextAttempt, verdict.decision, verdict.reasonCode, 'system', now);
+  return {
+    attempt: nextAttempt,
+    audit,
+    state: {
+      ...state,
+      profiles,
+      users: writePhotoUser(state, uid, nextAttempt, now),
+      photoAttempts: (state.photoAttempts ?? []).map((item) => (item.id === attemptId ? nextAttempt : item)),
+      photoAudits: [...(state.photoAudits ?? []), audit],
+    },
+  };
+}
+
+export function listPhotoVerifications(state: DemoState, actorId: string) {
+  const actor = requireUser(state, actorId);
+  if (actor.role !== 'admin') throw new Error('Admin only.');
+  return (state.photoAttempts ?? [])
+    .filter((item) => item.status === 'pending_review')
+    .map((item) => ({
+      id: item.id,
+      uid: item.uid,
+      displayName: profileFor(state, item.uid)?.displayName ?? '',
+      pose: isPhotoPose(item.pose) ? item.pose : '',
+      createdAt: item.createdAt,
+    }));
+}
+
+export function photoVerificationPreview(state: DemoState, actorId: string, attemptId: string): string | null {
+  const actor = requireUser(state, actorId);
+  if (actor.role !== 'admin') throw new Error('Admin only.');
+  const attempt = (state.photoAttempts ?? []).find((item) => item.id === attemptId && item.status === 'pending_review');
+  return attempt?.imageBase64 ?? null;
+}
+
+export function reviewPhotoVerification(state: DemoState, actorId: string, attemptId: string, action: 'approve' | 'reject', now: string) {
+  const actor = requireUser(state, actorId);
+  if (actor.role !== 'admin') throw new Error('Admin only.');
+  const attempt = (state.photoAttempts ?? []).find((item) => item.id === attemptId);
+  if (!attempt || attempt.status !== 'pending_review') throw new Error('photo-attempt');
+  const profile = profileFor(state, attempt.uid);
+  const photoStill = profile?.photoUrl === attempt.mainPhotoUrl;
+  const approved = action === 'approve' && photoStill;
+  const nextAttempt: DemoPhotoAttempt = {
+    ...attempt,
+    status: approved ? 'approved' : 'rejected',
+    decidedAt: now,
+    imageBase64: undefined,
+  };
+  const audit = photoAudit(nextAttempt, approved ? 'match' : 'review', approved ? 'admin-approve' : action === 'approve' ? 'photo-changed' : 'admin-reject', actorId, now);
+  const profiles = state.profiles.map((item) => {
+    if (item.uid !== attempt.uid) return item;
+    if (approved) return { ...item, verified: true };
+    const rest = { ...item };
+    delete rest.verified;
+    return rest;
+  });
+  return {
+    state: {
+      ...state,
+      profiles,
+      users: writePhotoUser(state, attempt.uid, nextAttempt, now),
+      photoAttempts: (state.photoAttempts ?? []).map((item) => (item.id === attemptId ? nextAttempt : item)),
+      photoAudits: [...(state.photoAudits ?? []), audit],
+    },
+  };
 }
 
 export function reviewPost(state: DemoState, actorId: string, id: string, status: 'approved' | 'rejected', note: string): DemoState {

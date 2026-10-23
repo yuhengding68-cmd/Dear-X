@@ -12,5 +12,16 @@ service firebase.storage {
         && request.resource.contentType.matches('image/(jpeg|png|webp)');
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
+
+    // Verification selfies. The owner can upload once. Other users cannot read.
+    // Cloud Functions delete the file after a decision. Clients cannot delete or replace it.
+    match /users/{uid}/verification/{file} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+      allow update, delete: if false;
+    }
   }
 }

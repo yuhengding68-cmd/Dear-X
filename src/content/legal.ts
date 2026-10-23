@@ -143,6 +143,15 @@ const privacy: Record<Locale, LegalSection[]> = {
       heading: '6. Contact',
       paragraphs: ['Privacy questions: privacy@dearx.app.'],
     },
+    {
+      heading: '7. Photo verification (draft for counsel)',
+      paragraphs: [
+        'Photo verification asks the person to take a selfie in the app while following a random pose. The image is stored on a private path and compared on the server with that person’s approved profile photos. The comparison can use Gemini vision or a server-side face-comparison provider such as Amazon Rekognition. Keys stay on the server and are not in the app.',
+        'The selfie is deleted after an automatic decision or an admin decision. What remains is the result and an audit record: time, pose id, decision, and reviewer id. The selfie, a face template, and a written description of the face are not kept.',
+        'This may be biometric information or biometric-like information under the Privacy Act 1988 (Cth) and any applicable state biometric or surveillance law. This section is a product note for a lawyer. It is not a notice approved for publication. Counsel should review consent, APP 3, APP 5, and APP 11, how long the audit record is kept, and whether a face-comparison vendor is a disclosure to a third party.',
+        'The Real badge appears only after the server sets verified. Changing the main profile photo clears it until the person verifies again. The selfie is not shown to other users and is not used to rank appearance. This step does not collect an identity document.',
+      ],
+    },
   ],
   'zh-CN': [
     {
@@ -179,6 +188,15 @@ const privacy: Record<Locale, LegalSection[]> = {
     {
       heading: '6. 联系',
       paragraphs: ['隐私问题：privacy@dearx.app。'],
+    },
+    {
+      heading: '7. 照片认证（供律师审阅的草稿）',
+      paragraphs: [
+        '照片认证会请用户在应用内按一个随机姿势拍摄自拍。图片保存在私人路径，由服务器与该用户已通过审核的资料照片比对。比对可以使用 Gemini 视觉，或服务器上的人脸比对服务（例如 Amazon Rekognition）。密钥只在服务器上，不会放进应用。',
+        '自动决定或管理员决定之后会删除自拍。留下的是结果和审计记录：时间、姿势编号、决定和审核人编号。不保留自拍、人脸模板，也不保留对人脸的文字描述。',
+        '这些信息在《1988 年隐私法》（联邦）以及适用的州生物识别或监控法律下，可能属于生物识别信息或类似生物识别的信息。本节是给律师的产品说明，不是已经批准对外发布的通知。律师应审查同意、APP 3、APP 5 和 APP 11、审计记录保存多久，以及人脸比对服务商是否构成向第三方披露。',
+        '只有服务器写下 verified 之后才会显示 Real 徽章。更换主照片会清掉徽章，直到用户重新认证。自拍不会给其他用户看，也不会用来给外貌打分。这一步不收集身份证件。',
+      ],
     },
   ],
 };

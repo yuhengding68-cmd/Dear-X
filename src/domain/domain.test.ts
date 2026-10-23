@@ -18,6 +18,8 @@ import {
 } from './profileEdit';
 import { adminClaimAllowed, isAccountBlocked, publishedSupportEmail, reportSla, requireAdminClaim, supportTicketInput } from './safetyQueue';
 import { normalizePhone } from './phone';
+import { auditLeaksImage, decidePhotoAttempt, interpretFaceMatch, profileAfterMainPhotoChange, verifiedFromDecision } from './photoVerification';
+import { listPhotoVerifications, reviewPhotoVerification, startPhotoVerification, submitPhotoVerification } from '../data/demo/logic';
 import { inboxLeaksPrivate, makeInboxItem, maySendEmail, normalizeAppPreferences, presenceFrom, pushCopy } from './activity';
 import { coarseCityKm, normalizeDiscoverFilters, profileFitsDiscover } from './discover';
 import { addProfilePhoto, chatPresence, completeOnboarding, createPost, createSupportTicket, deleteAccount, deleteProfilePhoto, exportData, fileReport, like, listInbox, myReportStatuses, presentReport, pulsePresence, reorderProfilePhotos, resolveReport, saveAppPreferences, saveDiscoverFilters, sendMessage, submitProfileText, visibleCreators, visibleProfiles } from '../data/demo/logic';
@@ -450,5 +452,41 @@ assert.equal(hiddenPresence[0]?.minutesAgo, null);
 assert.equal('ghostMode' in (hiddenPresence[0] ?? {}), false);
 assert.equal(maySendEmail(normalizeAppPreferences(undefined)), false);
 assert.equal(maySendEmail(normalizeAppPreferences({ emailUpdates: true })), true);
+
+const photoOpened = startPhotoVerification(seed, 'user-alex', '2026-10-23T12:00:00.000Z', 0);
+const photoAgain = startPhotoVerification(photoOpened.state, 'user-alex', '2026-10-23T12:00:01.000Z', 3);
+assert.equal(photoAgain.attempt.id, photoOpened.attempt.id);
+assert.equal(photoAgain.state.users.find((user) => user.uid === 'user-alex')?.photoVerifyAttempts?.length, 1);
+const photoMatched = submitPhotoVerification(photoOpened.state, 'user-alex', photoOpened.attempt.id, new TextEncoder().encode('SAME-face'), '2026-10-23T12:01:00.000Z');
+assert.equal(photoMatched.state.profiles.find((profile) => profile.uid === 'user-alex')?.verified, true);
+assert.equal(photoMatched.attempt.imageBase64, undefined);
+assert.equal(auditLeaksImage(photoMatched.audit), false);
+assert.equal(verifiedFromDecision('match'), true);
+assert.equal(verifiedFromDecision('mismatch'), false);
+assert.equal(verifiedFromDecision('review'), false);
+assert.equal(interpretFaceMatch({ samePerson: false, poseMatched: true, confidence: 0.9 }).decision, 'mismatch');
+assert.equal(interpretFaceMatch({ samePerson: null, poseMatched: null, confidence: null }).decision, 'review');
+const photoOther = submitPhotoVerification(photoOpened.state, 'user-alex', photoOpened.attempt.id, new TextEncoder().encode('OTHER-face'), '2026-10-23T12:01:00.000Z');
+assert.equal(photoOther.state.profiles.find((profile) => profile.uid === 'user-alex')?.verified, undefined);
+const photoQueued = submitPhotoVerification(photoOpened.state, 'user-alex', photoOpened.attempt.id, new Uint8Array([9, 9, 9, 9]), '2026-10-23T12:01:00.000Z');
+assert.equal(photoQueued.attempt.status, 'pending_review');
+assert.equal(photoQueued.state.profiles.find((profile) => profile.uid === 'user-alex')?.verified, undefined);
+assert.ok(photoQueued.attempt.imageBase64);
+assert.throws(() => reviewPhotoVerification(photoQueued.state, 'user-alex', photoQueued.attempt.id, 'approve', '2026-10-23T12:02:00.000Z'));
+const photoApproved = reviewPhotoVerification(photoQueued.state, 'user-sam', photoQueued.attempt.id, 'approve', '2026-10-23T12:02:00.000Z');
+assert.equal(photoApproved.state.profiles.find((profile) => profile.uid === 'user-alex')?.verified, true);
+assert.equal(photoApproved.state.photoAttempts?.find((item) => item.id === photoQueued.attempt.id)?.imageBase64, undefined);
+assert.equal(listPhotoVerifications(photoApproved.state, 'user-sam').some((item) => item.id === photoQueued.attempt.id), false);
+const photoChanged = profileAfterMainPhotoChange(
+  { photoUrl: 'https://cdn.example/a.jpg', verified: true },
+  { photoUrl: 'https://cdn.example/b.jpg', verified: true },
+);
+assert.equal('verified' in photoChanged, false);
+let limitedPhotos = seed;
+for (let index = 0; index < 5; index += 1) {
+  limitedPhotos = startPhotoVerification(limitedPhotos, 'user-alex', new Date(Date.parse('2026-10-23T12:00:00.000Z') + index * 60_000).toISOString(), index).state;
+}
+assert.throws(() => startPhotoVerification(limitedPhotos, 'user-alex', new Date(Date.parse('2026-10-23T12:00:00.000Z') + 5 * 60_000).toISOString(), 6));
+assert.equal(decidePhotoAttempt([Date.parse('2026-10-23T12:00:00.000Z')], Date.parse('2026-10-23T12:00:30.000Z')).allowed, false);
 
 console.log('domain tests passed');

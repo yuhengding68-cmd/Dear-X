@@ -34,6 +34,7 @@ import { profileSharePayload } from '../domain/profileEdit';
 import { publishedSupportEmail } from '../domain/safetyQueue';
 import { OriginalButton, comingSoon } from '../components/ui';
 import { EditProfileModal } from './EditProfileModal';
+import { PhotoVerifySheet } from './PhotoVerifySheet';
 
 /** Original DearX ProfileView (source-code/App.tsx). Real profile fields come from the repository. */
 type ModalName = 'settings' | 'verification' | 'help' | 'edit' | null;
@@ -271,12 +272,16 @@ function VerificationModal({
   onClose,
   phone,
   photo,
+  photoStatus,
   kyc,
+  onStartPhoto,
 }: {
   onClose: () => void;
   phone: StepStatus;
   photo: StepStatus;
+  photoStatus?: string;
   kyc: StepStatus;
+  onStartPhoto: () => void;
 }) {
   const { t } = useI18n();
   const steps: { id: number; title: string; icon: typeof Phone; status: StepStatus }[] = [
@@ -284,10 +289,15 @@ function VerificationModal({
     { id: 2, title: t('profile.photoVerified'), icon: Camera, status: photo },
     { id: 3, title: t('profile.kyc'), icon: ShieldCheck, status: kyc },
   ];
-  const statusText = (status: StepStatus) => (status === 'completed' ? t('profile.verified') : t('profile.requiredWithdraw'));
+  const statusText = (stepId: number, status: StepStatus) => {
+    if (status === 'completed') return t('profile.verified');
+    if (stepId === 2 && photoStatus === 'pending_review') return t('profile.photoReview');
+    if (stepId === 2 && photoStatus === 'rejected') return t('profile.photoRejected');
+    return t('profile.requiredWithdraw');
+  };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
+    <div data-testid="verification-sheet" className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
       <div className="w-full max-w-md glass-card rounded-3xl p-6 border border-white/20 shadow-2xl animate-slide-up relative">
         <button type="button" onClick={onClose} className="absolute top-4 right-4 text-white/50 hover:text-white">
           <X className="w-6 h-6" />
@@ -321,9 +331,14 @@ function VerificationModal({
                 </div>
                 <div className="flex-1">
                   <h3 className="font-bold text-white">{step.title}</h3>
-                  <p className="text-xs text-brand-subtext">{statusText(step.status)}</p>
+                  <p className="text-xs text-brand-subtext">{statusText(step.id, step.status)}</p>
                 </div>
-                {step.status === 'pending' ? (
+                {step.status === 'pending' && step.id === 2 && photoStatus !== 'pending_review' ? (
+                  <button type="button" data-testid="photo-verify-start" onClick={onStartPhoto} className="px-3 py-1.5 bg-brand-blue text-white text-xs font-bold rounded-lg hover:bg-brand-blue/80">
+                    {t('profile.start')}
+                  </button>
+                ) : null}
+                {step.status === 'pending' && step.id !== 2 ? (
                   <button type="button" onClick={comingSoon} className="px-3 py-1.5 bg-brand-blue text-white text-xs font-bold rounded-lg hover:bg-brand-blue/80">
                     {t('profile.start')}
                   </button>
@@ -477,12 +492,13 @@ function kycStep(status: KycStatus | undefined): StepStatus {
 
 export function ProfileScreen() {
   const { t } = useI18n();
-  const { repo, me, session, signOut, setNotice } = useApp();
+  const { repo, me, session, signOut, setNotice, reloadMe } = useApp();
   const [profile, setProfile] = useState<DatingProfile | null>(null);
   const [creator, setCreator] = useState<Creator | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [modal, setModal] = useState<ModalName>(null);
   const [revision, setRevision] = useState(0);
+  const [photoOpen, setPhotoOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -557,7 +573,7 @@ export function ProfileScreen() {
             )}
           </div>
           {profile?.verified ? (
-            <div className="absolute bottom-1 right-1 bg-brand-blue text-white p-1.5 rounded-full border-4 border-[#12122A] shadow-lg">
+            <div data-testid="real-badge" className="absolute bottom-1 right-1 bg-brand-blue text-white p-1.5 rounded-full border-4 border-[#12122A] shadow-lg">
               <BadgeCheck className="w-4 h-4" strokeWidth={3} />
             </div>
           ) : null}
@@ -668,7 +684,18 @@ export function ProfileScreen() {
           onClose={() => setModal(null)}
           phone={session?.phone || me?.phone ? 'completed' : 'pending'}
           photo={profile?.verified ? 'completed' : 'pending'}
+          photoStatus={me?.photoVerification?.status}
           kyc={kycStep(creator?.kycStatus)}
+          onStartPhoto={() => setPhotoOpen(true)}
+        />
+      ) : null}
+      {photoOpen ? (
+        <PhotoVerifySheet
+          onClose={() => setPhotoOpen(false)}
+          onDone={() => {
+            setRevision((value) => value + 1);
+            void reloadMe();
+          }}
         />
       ) : null}
       {modal === 'help' ? <HelpModal onClose={() => setModal(null)} /> : null}

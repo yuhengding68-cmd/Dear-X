@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomInt, randomUUID } from 'crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue, getFirestore, type DocumentSnapshot, type Query } from 'firebase-admin/firestore';
@@ -38,6 +38,14 @@ import {
   type InboxItem,
 } from './activity';
 import { normalizeDiscoverFilters, profileFitsDiscover } from './discover';
+import {
+  decidePhotoAttempt,
+  interpretFaceMatch,
+  pickPose,
+  selectFaceMatchProvider,
+  selfieStoragePath,
+  type FaceReading,
+} from './photoVerification';
 
 initializeApp();
 
@@ -1119,7 +1127,7 @@ function profileWrite(profile: PublicProfileShape): Record<string, unknown> {
     photoUrls: profile.photoUrls,
     job: profile.job ? profile.job : FieldValue.delete(),
   };
-  if (profile.verified) payload.verified = true;
+  payload.verified = profile.verified === true ? true : FieldValue.delete();
   for (const key of PRIVATE_PROFILE_KEYS) {
     if (key in payload) throw new HttpsError('internal', 'Public profile cannot store private account fields.');
   }
@@ -1136,6 +1144,7 @@ async function loadGallery(uid: string, profile: PublicProfileShape): Promise<Pr
 
 async function saveGallery(uid: string, photos: ProfilePhotoRecord[], profile: PublicProfileShape): Promise<PublicProfileShape> {
   const next = projectPublicPhotos(profile, photos);
+  if ((profile.photoUrl ?? null) !== (next.photoUrl ?? null)) delete next.verified;
   await db.doc(`users/${uid}`).set({ profilePhotos: photos }, { merge: true });
   await db.doc(`profiles/${uid}`).set(profileWrite(next), { merge: true });
   return next;
@@ -1556,6 +1565,233 @@ export const deleteAccount = onCall(callable, async (request) => {
     .bucket()
     .deleteFiles({ prefix: `users/${uid}/photos/` })
     .catch(() => undefined);
+  await getStorage()
+    .bucket()
+    .deleteFiles({ prefix: `users/${uid}/verification/` })
+    .catch(() => undefined);
+  const [photoAttempts, photoAudits] = await Promise.all([
+    db.collection('photoVerifications').where('uid', '==', uid).get(),
+    db.collection('photoVerificationAudit').where('uid', '==', uid).get(),
+  ]);
+  await Promise.all([
+    ...photoAttempts.docs.map((item) => item.ref.delete()),
+    ...photoAudits.docs.map((item) => item.ref.delete()),
+  ]);
   await authAdmin.deleteUser(uid).catch(() => undefined);
   return { ok: true };
+});
+
+function attemptNumbers(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
+}
+
+async function deleteSelfie(path: string): Promise<void> {
+  await getStorage().bucket().file(path).delete({ ignoreNotFound: true }).catch(() => undefined);
+}
+
+async function referencePhotos(uid: string, photos: ProfilePhotoRecord[]): Promise<Array<{ bytes: Buffer; type: string }>> {
+  const approved = photos.filter((photo) => photo.status === 'approved' && photo.storagePath.startsWith(`users/${uid}/photos/`)).slice(0, 3);
+  const loaded: Array<{ bytes: Buffer; type: string }> = [];
+  for (const photo of approved) {
+    const file = getStorage().bucket().file(photo.storagePath);
+    const [exists] = await file.exists();
+    if (!exists) continue;
+    const [metadata] = await file.getMetadata();
+    const type = String(metadata.contentType ?? 'image/jpeg');
+    const [bytes] = await file.download();
+    if (bytes.length > 0 && bytes.length <= 8 * 1024 * 1024) loaded.push({ bytes, type });
+  }
+  return loaded;
+}
+
+export const startPhotoVerification = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const userRef = db.doc(`users/${uid}`);
+  const profileSnap = await db.doc(`profiles/${uid}`).get();
+  if (!profileSnap.exists || typeof profileSnap.get('photoUrl') !== 'string' || !profileSnap.get('photoUrl')) {
+    throw new HttpsError('failed-precondition', 'photo-required');
+  }
+  const attemptId = `pv_${randomUUID().replace(/-/g, '')}`;
+  const storagePath = selfieStoragePath(uid, attemptId);
+  if (!storagePath) throw new HttpsError('internal', 'photoId');
+  const pose = pickPose(randomInt(0, 5));
+  const now = new Date().toISOString();
+  const nowMs = Date.parse(now);
+  const existing = await db.runTransaction(async (tx) => {
+    const user = await tx.get(userRef);
+    if (user.get('onboardingComplete') !== true) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+    const current = user.get('photoVerification') as { attemptId?: string; status?: string; pose?: string; updatedAt?: string } | undefined;
+    if (current?.status === 'awaiting_upload' && typeof current.attemptId === 'string' && typeof current.updatedAt === 'string') {
+      const age = nowMs - Date.parse(current.updatedAt);
+      const prior = await tx.get(db.doc(`photoVerifications/${current.attemptId}`));
+      if (prior.exists && prior.get('status') === 'awaiting_upload' && age >= 0 && age < 5_000) {
+        return {
+          attemptId: current.attemptId,
+          pose: String(current.pose ?? prior.get('pose') ?? ''),
+          storagePath: String(prior.get('storagePath') ?? ''),
+        };
+      }
+    }
+    const limit = decidePhotoAttempt(attemptNumbers(user.get('photoVerifyAttempts')), nowMs);
+    if (!limit.allowed) throw new HttpsError('resource-exhausted', 'photo-verify-limited');
+    tx.set(userRef, {
+      photoVerifyAttempts: limit.next,
+      photoVerification: { attemptId, status: 'awaiting_upload', pose, updatedAt: now },
+    }, { merge: true });
+    tx.set(db.doc(`photoVerifications/${attemptId}`), {
+      id: attemptId,
+      uid,
+      pose,
+      status: 'awaiting_upload',
+      storagePath,
+      mainPhotoUrl: String(profileSnap.get('photoUrl')),
+      createdAt: now,
+    });
+    return null;
+  });
+  if (existing?.storagePath) return existing;
+  return { attemptId, pose, storagePath };
+});
+
+export const submitPhotoVerification = onCall(photoCallable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const attemptId = textField(payload(request), 'attemptId', 80);
+  const storagePath = selfieStoragePath(uid, attemptId);
+  if (!storagePath) throw new HttpsError('invalid-argument', 'attemptId');
+  const attemptRef = db.doc(`photoVerifications/${attemptId}`);
+  const attempt = await attemptRef.get();
+  if (!attempt.exists || attempt.get('uid') !== uid || attempt.get('status') !== 'awaiting_upload') {
+    throw new HttpsError('failed-precondition', 'photo-attempt');
+  }
+  if (attempt.get('storagePath') !== storagePath) throw new HttpsError('failed-precondition', 'photo-attempt');
+  const profileSnap = await db.doc(`profiles/${uid}`).get();
+  const profile = profileShape(uid, profileSnap.data());
+  if (!profile.photoUrl || profile.photoUrl !== attempt.get('mainPhotoUrl')) {
+    throw new HttpsError('failed-precondition', 'photo-changed');
+  }
+  const file = getStorage().bucket().file(storagePath);
+  const [exists] = await file.exists();
+  if (!exists) throw new HttpsError('not-found', 'Photo upload was not found.');
+  const [metadata] = await file.getMetadata();
+  const size = Number(metadata.size ?? 0);
+  const contentType = String(metadata.contentType ?? '');
+  if (photoUploadIssue(contentType, size)) throw new HttpsError('invalid-argument', 'photo');
+  const [selfie] = await file.download();
+  const photos = await loadGallery(uid, profile);
+  const references = await referencePhotos(uid, photos);
+  const provider = selectFaceMatchProvider(GEMINI_API_KEY.value());
+  const reading: FaceReading = references.length === 0 ? { samePerson: null, poseMatched: null, confidence: null } : await provider.compare({
+    selfie,
+    selfieType: contentType,
+    references,
+    pose: String(attempt.get('pose') ?? ''),
+  });
+  const verdict = references.length === 0 ? { decision: 'review' as const, reasonCode: 'no-reference' } : interpretFaceMatch(reading);
+  const now = new Date().toISOString();
+  const status = verdict.decision === 'match' ? 'approved' : verdict.decision === 'mismatch' ? 'rejected' : 'pending_review';
+  if (status !== 'pending_review') await deleteSelfie(storagePath);
+  const pose = String(attempt.get('pose') ?? '');
+  await attemptRef.set({
+    status,
+    decidedAt: status === 'pending_review' ? null : now,
+    storagePath: status === 'pending_review' ? storagePath : null,
+    provider: provider.name,
+    reasonCode: verdict.reasonCode,
+  }, { merge: true });
+  await db.doc(`users/${uid}`).set({
+    photoVerification: { attemptId, status, pose, updatedAt: now },
+  }, { merge: true });
+  if (verdict.decision === 'match') {
+    await db.doc(`profiles/${uid}`).set({ verified: true }, { merge: true });
+  } else if (verdict.decision === 'mismatch') {
+    await db.doc(`profiles/${uid}`).set({ verified: FieldValue.delete() }, { merge: true });
+  }
+  const auditId = `photo_audit_${randomUUID()}`;
+  await db.doc(`photoVerificationAudit/${auditId}`).set({
+    id: auditId,
+    attemptId,
+    uid,
+    pose,
+    decision: verdict.decision,
+    reasonCode: verdict.reasonCode,
+    provider: provider.name,
+    actorId: 'system',
+    createdAt: now,
+  });
+  return { status, pose };
+});
+
+export const listPhotoVerifications = onCall(callable, async (request) => {
+  await assertAdmin(request);
+  const snap = await db.collection('photoVerifications').where('status', '==', 'pending_review').limit(40).get();
+  const items = await Promise.all(snap.docs.map(async (item) => {
+    const uid = String(item.get('uid') ?? '');
+    const profile = await db.doc(`profiles/${uid}`).get();
+    return {
+      id: item.id,
+      uid,
+      displayName: String(profile.get('displayName') ?? ''),
+      pose: String(item.get('pose') ?? ''),
+      createdAt: String(item.get('createdAt') ?? ''),
+    };
+  }));
+  return { items };
+});
+
+export const photoVerificationPreview = onCall(callable, async (request) => {
+  await assertAdmin(request);
+  const attemptId = textField(payload(request), 'attemptId', 80);
+  const attempt = await db.doc(`photoVerifications/${attemptId}`).get();
+  if (!attempt.exists || attempt.get('status') !== 'pending_review') throw new HttpsError('not-found', 'photo-attempt');
+  const storagePath = attempt.get('storagePath');
+  if (typeof storagePath !== 'string' || !storagePath.startsWith(`users/${String(attempt.get('uid'))}/verification/`)) {
+    throw new HttpsError('not-found', 'photo-attempt');
+  }
+  const file = getStorage().bucket().file(storagePath);
+  const [exists] = await file.exists();
+  if (!exists) throw new HttpsError('not-found', 'photo-attempt');
+  const [bytes] = await file.download();
+  if (bytes.length > 2 * 1024 * 1024) throw new HttpsError('failed-precondition', 'photo');
+  return { contentType: 'image/jpeg', imageBase64: bytes.toString('base64') };
+});
+
+export const reviewPhotoVerification = onCall(callable, async (request) => {
+  const actorId = await assertAdmin(request);
+  const data = payload(request);
+  const attemptId = textField(data, 'attemptId', 80);
+  const action = textField(data, 'action', 20);
+  if (action !== 'approve' && action !== 'reject') throw new HttpsError('invalid-argument', 'action');
+  const attemptRef = db.doc(`photoVerifications/${attemptId}`);
+  const attempt = await attemptRef.get();
+  if (!attempt.exists || attempt.get('status') !== 'pending_review') throw new HttpsError('not-found', 'photo-attempt');
+  const target = String(attempt.get('uid') ?? '');
+  const profileSnap = await db.doc(`profiles/${target}`).get();
+  const photoStill = typeof profileSnap.get('photoUrl') === 'string' && profileSnap.get('photoUrl') === attempt.get('mainPhotoUrl');
+  const approved = action === 'approve' && photoStill;
+  const now = new Date().toISOString();
+  const storagePath = attempt.get('storagePath');
+  if (typeof storagePath === 'string' && storagePath.length > 0) await deleteSelfie(storagePath);
+  const status = approved ? 'approved' : 'rejected';
+  const reasonCode = approved ? 'admin-approve' : action === 'approve' ? 'photo-changed' : 'admin-reject';
+  await attemptRef.set({ status, decidedAt: now, storagePath: null, reasonCode }, { merge: true });
+  await db.doc(`users/${target}`).set({
+    photoVerification: { attemptId, status, pose: String(attempt.get('pose') ?? ''), updatedAt: now },
+  }, { merge: true });
+  await db.doc(`profiles/${target}`).set(approved ? { verified: true } : { verified: FieldValue.delete() }, { merge: true });
+  const auditId = `photo_audit_${randomUUID()}`;
+  await db.doc(`photoVerificationAudit/${auditId}`).set({
+    id: auditId,
+    attemptId,
+    uid: target,
+    pose: String(attempt.get('pose') ?? ''),
+    decision: approved ? 'match' : 'review',
+    reasonCode,
+    provider: 'admin',
+    actorId,
+    createdAt: now,
+  });
+  return { status };
 });

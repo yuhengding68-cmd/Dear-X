@@ -31,6 +31,7 @@ import {
   fileReport,
   chatPresence,
   like,
+  listPhotoVerifications,
   listInbox,
   markInboxRead,
   myReportStatuses,
@@ -40,15 +41,19 @@ import {
   profileFor,
   reorderProfilePhotos,
   submitProfileText,
+  photoVerificationPreview,
   pulsePresence,
   purchase,
   requestPayout,
   saveAppPreferences,
   saveDiscoverFilters,
   resolveReport,
+  reviewPhotoVerification,
   reviewPost,
   reviewReport,
   sendMessage,
+  startPhotoVerification,
+  submitPhotoVerification,
   startCreator,
   startKyc,
   unblock,
@@ -557,6 +562,48 @@ export function createDemoRepository(): Repository {
         throw new RepoError('forbidden', error instanceof Error ? error.message : 'Update failed.');
       }
       persist();
+    },
+    async startPhotoVerification() {
+      try {
+        const result = startPhotoVerification(state, uid(), nowIso(), Math.random() * 5);
+        state = result.state;
+        persist();
+        return { attemptId: result.attempt.id, pose: result.attempt.pose, storagePath: `users/${uid()}/verification/${result.attempt.id}.jpg` };
+      } catch (error) {
+        throw new RepoError('photo-verify', error instanceof Error ? error.message : 'photo-verify');
+      }
+    },
+    async submitPhotoVerification(input) {
+      try {
+        const result = submitPhotoVerification(state, uid(), input.attemptId, input.bytes, nowIso());
+        state = result.state;
+        persist();
+        return { status: result.attempt.status === 'approved' || result.attempt.status === 'rejected' || result.attempt.status === 'pending_review' ? result.attempt.status : 'pending_review', pose: result.attempt.pose };
+      } catch (error) {
+        throw new RepoError('photo-verify', error instanceof Error ? error.message : 'photo-verify');
+      }
+    },
+    async listPhotoVerifications() {
+      try {
+        return listPhotoVerifications(state, uid());
+      } catch (error) {
+        throw new RepoError('forbidden', error instanceof Error ? error.message : 'Admin only.');
+      }
+    },
+    async photoVerificationPreview(attemptId: string) {
+      try {
+        return photoVerificationPreview(state, uid(), attemptId);
+      } catch (error) {
+        throw new RepoError('forbidden', error instanceof Error ? error.message : 'Admin only.');
+      }
+    },
+    async reviewPhotoVerification(attemptId: string, action: 'approve' | 'reject') {
+      try {
+        state = reviewPhotoVerification(state, uid(), attemptId, action, nowIso()).state;
+        persist();
+      } catch (error) {
+        throw new RepoError('forbidden', error instanceof Error ? error.message : 'Update failed.');
+      }
     },
     async resetDemo() {
       state = createSeedState();

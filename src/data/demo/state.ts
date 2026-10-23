@@ -21,6 +21,29 @@ import type {
   SupportTicket,
 } from '../../types';
 
+export interface DemoPhotoAudit {
+  id: string;
+  attemptId: string;
+  uid: string;
+  pose: string;
+  decision: string;
+  reasonCode: string;
+  actorId: string;
+  createdAt: string;
+}
+
+export interface DemoPhotoAttempt {
+  id: string;
+  uid: string;
+  pose: string;
+  status: 'awaiting_upload' | 'pending_review' | 'approved' | 'rejected';
+  mainPhotoUrl: string;
+  createdAt: string;
+  decidedAt?: string;
+  /** Present only until a decision deletes the selfie. */
+  imageBase64?: string;
+}
+
 export type { DatingProfile, PrivateUser, Creator, CreatorPost, Report, Message };
 
 /** Persisted demo database. Messages are a map of chat id → subcollection. */
@@ -47,6 +70,8 @@ export interface DemoState {
   auditLog?: ModerationAudit[];
   supportTickets?: SupportTicket[];
   inboxes?: Record<string, InboxItem[]>;
+  photoAttempts?: DemoPhotoAttempt[];
+  photoAudits?: DemoPhotoAudit[];
 }
 
 export const DEMO_DB_KEY = 'dearx.demo.db.v1';
