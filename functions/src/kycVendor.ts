@@ -26,6 +26,18 @@ export function createKycVendor(): KycVendor {
   };
 }
 
+/**
+ * Live is the default. The stub completion callable only works when
+ * KYC_MODE=stub is set explicitly AND the functions run in the emulator
+ * (FUNCTIONS_EMULATOR=true) or with ALLOW_STUBS=true on a non-production project.
+ */
+export function stubsAllowed(): boolean {
+  const emulator = process.env.FUNCTIONS_EMULATOR === 'true';
+  const project = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT ?? '';
+  const nonProd = process.env.ALLOW_STUBS === 'true' && !/prod/i.test(project);
+  return emulator || nonProd;
+}
+
 export function stubKycCompletionAllowed(): boolean {
-  return process.env.KYC_MODE !== 'live';
+  return process.env.KYC_MODE === 'stub' && stubsAllowed();
 }
