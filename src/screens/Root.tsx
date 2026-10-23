@@ -1,4 +1,6 @@
-import { LanguageButton, Logo, ModePill, TopBar } from '../components/ui';
+import type { ReactNode } from 'react';
+import { Heart, MessageCircle, Settings, Shield, Sparkles } from 'lucide-react';
+import { LanguageButton, Logo, LogoX, ModePill, TopBar } from '../components/ui';
 import { useI18n } from '../i18n';
 import { useApp, type Tab } from '../state/AppProvider';
 import { AdminScreen } from './AdminScreen';
@@ -42,6 +44,69 @@ export function Root() {
   const publicSafety = app.route.name === 'main' && app.route.tab === 'safety' && signedOut;
   if (signedOut && !publicSafety) {
     return <AuthScreen />;
+  }
+
+  if (app.route.name === 'main' && app.session) {
+    const tab = app.route.tab;
+    // Original DearX shell (header + bottom nav). Wallet/leaderboard tabs replaced by matches/creators/safety.
+    const navItems: { tab: Tab; color: string; dot: string; icon: ReactNode }[] = [
+      { tab: 'discover', color: 'text-brand-blue bg-brand-blue/10', dot: 'bg-brand-blue', icon: <div className="w-6 h-6 flex items-center justify-center"><LogoX className="w-5 h-5" /></div> },
+      { tab: 'matches', color: 'text-brand-purple bg-brand-purple/10', dot: 'bg-brand-purple', icon: <Heart className="w-6 h-6" /> },
+      { tab: 'chats', color: 'text-white bg-white/10', dot: 'bg-white', icon: <MessageCircle className="w-6 h-6" /> },
+      { tab: 'creators', color: 'text-brand-yellow bg-brand-yellow/10', dot: 'bg-brand-yellow', icon: <Sparkles className="w-6 h-6" /> },
+      { tab: 'safety', color: 'text-white bg-white/10', dot: 'bg-white', icon: <Shield className="w-6 h-6" /> },
+    ];
+    return (
+      <div className="h-screen w-full flex flex-col bg-[#12122A] text-white overflow-hidden relative font-sans">
+        <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+          <div className="absolute top-[-20%] left-[-20%] w-[80vw] h-[80vw] bg-brand-blue/30 rounded-full blur-[100px] animate-pulse"></div>
+          <div className="absolute bottom-[-20%] right-[-20%] w-[80vw] h-[80vw] bg-brand-purple/30 rounded-full blur-[100px] animate-pulse" style={{ animationDelay: '2s' }}></div>
+        </div>
+        <header className="fixed top-0 left-0 right-0 h-16 glass-nav z-50 flex items-center justify-between px-4">
+          <div className="flex flex-col items-center justify-center leading-none select-none cursor-pointer" onClick={() => app.go({ name: 'main', tab: 'discover' })}>
+            <span className="text-[10px] font-black tracking-[0.25em] text-white">DEAR</span>
+            <span className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-br from-brand-blue to-brand-purple -mt-1">X</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {app.repo.mode === 'demo' ? (
+              <div className="bg-white/5 px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/5 backdrop-blur-sm">
+                <span className="text-xs font-bold text-white">{t('common.demoMode')}</span>
+              </div>
+            ) : null}
+            <button type="button" aria-label={t('settings.title')} onClick={() => app.go({ name: 'settings' })} className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center relative">
+              <Settings className="w-5 h-5 text-white" />
+            </button>
+          </div>
+        </header>
+        <main className="flex-1 flex flex-col relative z-10 overflow-hidden pt-16 pb-24">
+          {app.notice ? <p className="px-4 pt-3 text-sm text-emerald-200">{app.notice}</p> : null}
+          {app.error ? <p className="px-4 pt-3 text-sm text-red-300">{app.error}</p> : null}
+          <div className={tab === 'discover' ? 'flex-1 relative' : 'flex-1 overflow-y-auto'}>
+            {tab === 'discover' ? <DiscoverScreen /> : null}
+            {tab === 'matches' ? <MatchesScreen /> : null}
+            {tab === 'chats' ? <ChatListScreen /> : null}
+            {tab === 'creators' ? <CreatorListScreen /> : null}
+            {tab === 'safety' ? <SafetyScreen /> : null}
+          </div>
+        </main>
+        <nav className="fixed bottom-0 left-0 right-0 h-20 glass-nav border-t border-white/5 flex items-center justify-around px-2 z-50 pb-2">
+          {navItems.map((item) => (
+            <button
+              key={item.tab}
+              type="button"
+              aria-label={t(`nav.${item.tab === 'chats' ? 'chat' : item.tab}`)}
+              onClick={() => app.go({ name: 'main', tab: item.tab })}
+              className={`p-3 rounded-2xl transition-all ${tab === item.tab ? item.color : 'text-brand-subtext hover:text-white'}`}
+            >
+              <div className="relative">
+                {item.icon}
+                {tab === item.tab && <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${item.dot}`}></div>}
+              </div>
+            </button>
+          ))}
+        </nav>
+      </div>
+    );
   }
 
   const title = (() => {

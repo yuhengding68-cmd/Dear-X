@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ComponentType, ReactNode } from 'react';
 import { useI18n } from '../i18n';
 import type { DataMode } from '../types';
 
@@ -116,5 +116,46 @@ export function Logo({ compact = false }: { compact?: boolean }) {
       <div className={compact ? 'text-sm' : 'text-2xl'}>DEAR</div>
       <div className={`text-gradient ${compact ? 'text-xl -mt-1' : 'text-4xl -mt-1'}`}>X</div>
     </div>
+  );
+}
+
+/** Original DearX Button (source-code/App.tsx), same classes and variants. */
+export function OriginalButton({
+  children,
+  variant = 'primary',
+  className = '',
+  icon: Icon,
+  type = 'button',
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'glass' | 'cyber' | 'white';
+  icon?: ComponentType<{ className?: string }>;
+}) {
+  const baseStyle = 'w-full py-3.5 rounded-2xl font-bold transition-all duration-300 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg';
+  const variants = {
+    primary: 'bg-vibe-gradient text-white shadow-glow-vibe hover:shadow-brand-blue/40 border border-white/10',
+    secondary: 'bg-slate-800 text-white hover:bg-slate-700',
+    outline: 'border-2 border-brand-blue text-brand-blue hover:bg-brand-blue/10',
+    ghost: 'text-brand-subtext hover:text-white hover:bg-white/5 shadow-none',
+    glass: 'glass text-white hover:bg-white/10',
+    cyber: 'bg-cyber-gradient text-black shadow-glow-cyber hover:brightness-110 border border-yellow-200/50',
+    white: 'bg-white text-black hover:bg-gray-100',
+  };
+  return (
+    <button {...props} type={type} className={`${baseStyle} ${variants[variant]} ${className}`}>
+      {Icon && <Icon className="w-5 h-5" />}
+      {children}
+    </button>
+  );
+}
+
+/** Original brand "X" glyph used in the bottom navigation. */
+export function LogoX(props: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" {...props} fill="none" stroke="none">
+      <text x="50%" y="55%" dominantBaseline="middle" textAnchor="middle" fontSize="22" fontWeight="900" fill="currentColor" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+        X
+      </text>
+    </svg>
   );
 }
