@@ -1,13 +1,195 @@
-<!doctype html>
+
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DearX</title>
-  </head>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                blue: '#2E5CFF',   // Electric Blue
+                purple: '#9D46FF', // Neon Purple
+                yellow: '#FFD300', // Cyber Yellow (The Money Color)
+                dark: '#12122A',   // Brighter Midnight (Background)
+                card: '#1C1C33',   // Dark Surface
+                text: '#FFFFFF',   // White Text
+                subtext: '#94A3B8' // Slate 400
+              }
+            },
+            backgroundImage: {
+              'vibe-gradient': 'linear-gradient(135deg, #2E5CFF 0%, #9D46FF 100%)', // The Soul
+              'cyber-gradient': 'linear-gradient(135deg, #FFD300 0%, #FFB800 100%)', // The Money
+              'glass-gradient': 'linear-gradient(180deg, rgba(20, 20, 43, 0.7) 0%, rgba(20, 20, 43, 0.4) 100%)',
+              'mesh-gradient': 'radial-gradient(at 0% 0%, hsla(258,90%,60%,0.25) 0px, transparent 50%), radial-gradient(at 100% 100%, hsla(227,100%,50%,0.25) 0px, transparent 50%)',
+            },
+            boxShadow: {
+              'glow-vibe': '0 0 20px -5px rgba(157, 70, 255, 0.5)',
+              'glow-cyber': '0 0 20px -5px rgba(255, 211, 0, 0.6)',
+              'float': '0 10px 40px -10px rgba(0, 0, 0, 0.5)',
+              'glass': '0 8px 32px 0 rgba(0, 0, 0, 0.3)',
+            }
+          }
+        }
+      }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background-color: #12122A; /* Brighter background */
+        color: #FFFFFF;
+        overflow-x: hidden;
+      }
+      /* Hide scrollbar for cleaner mobile UI */
+      ::-webkit-scrollbar {
+        width: 0px;
+        background: transparent;
+      }
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+      .glass {
+        background: rgba(30, 30, 50, 0.4);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .glass-nav {
+        background: rgba(18, 18, 42, 0.6);
+        backdrop-filter: blur(30px);
+        -webkit-backdrop-filter: blur(30px);
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 -10px 40px rgba(0,0,0,0.5);
+      }
+      .glass-card {
+        background: rgba(40, 40, 65, 0.4);
+        backdrop-filter: blur(30px);
+        -webkit-backdrop-filter: blur(30px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+      }
+      .glass-pill {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      
+      .text-gradient {
+        background: linear-gradient(135deg, #2E5CFF 0%, #9D46FF 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      
+      .text-cyber {
+        color: #FFD300;
+      }
+
+      /* Background Mesh Animation */
+      .mesh-bg {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: -1;
+        overflow: hidden;
+        background: #12122A;
+      }
+      .blob {
+        position: absolute;
+        filter: blur(90px);
+        opacity: 0.5; /* Increased opacity for brightness */
+        border-radius: 50%;
+        animation: float-blob 12s infinite ease-in-out alternate;
+      }
+      .blob-1 {
+        top: -10%;
+        left: -10%;
+        width: 60vw;
+        height: 60vw;
+        background: #2E5CFF; /* Electric Blue */
+        animation-delay: 0s;
+      }
+      .blob-2 {
+        bottom: -10%;
+        right: -10%;
+        width: 70vw;
+        height: 70vw;
+        background: #9D46FF; /* Neon Purple */
+        animation-delay: -4s;
+      }
+      .blob-3 {
+        top: 40%;
+        left: 30%;
+        width: 40vw;
+        height: 40vw;
+        background: #2E5CFF;
+        animation-delay: -8s;
+        opacity: 0.4;
+      }
+
+      @keyframes float-blob {
+        0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+        50% { transform: translate(30px, 20px) scale(1.1) rotate(5deg); }
+        100% { transform: translate(-20px, 40px) scale(0.95) rotate(-5deg); }
+      }
+
+      @keyframes fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      .animate-fade-in {
+        animation: fade-in 0.4s ease-out;
+      }
+      @keyframes slide-up {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      .animate-slide-up {
+        animation: slide-up 0.4s ease-out;
+      }
+      
+      /* Smooth button press */
+      button:active {
+        transform: scale(0.98);
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+    "recharts": "https://aistudiocdn.com/recharts@^3.5.0",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
+    "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
+    "firebase/": "https://esm.sh/firebase@^12.7.0/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+    <!-- Mesh Background -->
+    <div class="mesh-bg">
+      <div class="blob blob-1"></div>
+      <div class="blob blob-2"></div>
+      <div class="blob blob-3"></div>
+    </div>
+  <script type="module" src="/index.tsx"></script>
+</body>
 </html>
-
