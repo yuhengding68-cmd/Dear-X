@@ -1,0 +1,146 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+    function isAdmin() {
+      return signedIn()
+        && exists(userPath(request.auth.uid))
+        && get(userPath(request.auth.uid)).data.role == 'admin';
+    }
+    // Private account. Role, date of birth, and phone are not client-writable.
+    // Public profiles and creator docs are written only by Cloud Functions, which
+    // omit date of birth, phone, email, and (for creators) city or distance.
+    // Rules cannot prove those keys are absent for a list query, so the write
+    // path is what keeps them off the documents people can read.
+    match /users/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow write: if false;
+    }
+
+    // Dating cards. Block hiding is applied in the data layer and Cloud Functions
+    // because a list query cannot exclude a per-user block set inside rules.
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /blocks/{id} {
+      allow read: if signedIn() && (
+        resource.data.blockerId == request.auth.uid
+        || resource.data.blockedId == request.auth.uid
+        || isAdmin()
+      );
+      allow write: if false;
+    }
+
+    match /blockEdges/{uid}/hidden/{otherId} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    match /passes/{id} {
+      allow read: if signedIn() && resource.data.fromUserId == request.auth.uid;
+      allow create: if signedIn()
+        && id == request.auth.uid + '_' + request.resource.data.toUserId
+        && request.resource.data.fromUserId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['fromUserId', 'toUserId', 'createdAt']);
+      allow update, delete: if false;
+    }
+
+    match /swipes/{id} {
+      allow read: if signedIn() && resource.data.fromUserId == request.auth.uid;
+      allow write: if false;
+    }
+
+    match /likes/{id} {
+      allow read, write: if false;
+    }
+
+    match /matches/{id} {
+      allow read: if signedIn() && request.auth.uid in resource.data.userIds;
+      allow write: if false;
+    }
+
+    match /chats/{chatId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow write: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
+        allow write: if false;
+      }
+    }
+
+    // Clients may file a report but cannot change its status.
+    match /reports/{id} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.status == 'open'
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() < 200
+        && request.resource.data.details is string
+        && request.resource.data.details.size() < 2000
+        && request.resource.data.targetType in ['user', 'message', 'creator', 'post']
+        && request.resource.data.keys().hasOnly([
+          'reporterId', 'targetUserId', 'targetType', 'targetId', 'reason', 'details', 'status', 'createdAt'
+        ]);
+      allow read: if signedIn() && (resource.data.reporterId == request.auth.uid || isAdmin());
+      allow update, delete: if false;
+    }
+
+    match /creators/{uid} {
+      allow read: if signedIn() && (
+        isSelf(uid) || isAdmin() || resource.data.kycStatus == 'verified'
+      );
+      allow write: if false;
+    }
+
+    match /creatorPosts/{id} {
+      allow read: if signedIn() && (
+        isAdmin()
+        || resource.data.creatorId == request.auth.uid
+        || resource.data.reviewStatus == 'approved'
+      );
+      allow write: if false;
+    }
+
+    match /purchases/{id} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    match /entitlements/{id} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    match /balances/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow write: if false;
+    }
+
+    match /payouts/{id} {
+      allow read: if signedIn() && (resource.data.creatorId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    match /kycSessions/{id} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    match /ageDenials/{id} {
+      allow read, write: if false;
+    }
+  }
+}
