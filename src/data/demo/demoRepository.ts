@@ -1,0 +1,408 @@
+import { denialKey } from '../../domain/age';
+import { createStubIapToken } from '../../domain/commerce';
+import type {
+  AuthProvider,
+  AuthSession,
+  CreatorStartInput,
+  OnboardingInput,
+  PostInput,
+  PurchaseInput,
+  ReportInput,
+  ReportStatus,
+} from '../../types';
+import { RepoError } from '../errors';
+import type { PhoneStart, Repository } from '../repository';
+import {
+  block,
+  completeOnboarding,
+  completeStubKyc,
+  createPost,
+  deleteAccount,
+  exportData,
+  fileReport,
+  like,
+  pass,
+  profileFor,
+  purchase,
+  requestPayout,
+  reviewPost,
+  reviewReport,
+  sendMessage,
+  startCreator,
+  startKyc,
+  unblock,
+  visibleChats,
+  visibleCreators,
+  visibleProfiles,
+} from './logic';
+import { createSeedState, DEMO_PHONES } from './seed';
+import { DEMO_DB_KEY, DEMO_SESSION_KEY, type DemoState } from './state';
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function loadState(): DemoState {
+  const raw = localStorage.getItem(DEMO_DB_KEY);
+  if (!raw) {
+    const seeded = createSeedState();
+    localStorage.setItem(DEMO_DB_KEY, JSON.stringify(seeded));
+    return seeded;
+  }
+  return JSON.parse(raw) as DemoState;
+}
+
+function saveState(state: DemoState): void {
+  localStorage.setItem(DEMO_DB_KEY, JSON.stringify(state));
+}
+
+function loadSession(): AuthSession | null {
+  const raw = localStorage.getItem(DEMO_SESSION_KEY);
+  return raw ? (JSON.parse(raw) as AuthSession) : null;
+}
+
+function saveSession(session: AuthSession | null): void {
+  if (!session) localStorage.removeItem(DEMO_SESSION_KEY);
+  else localStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(session));
+}
+
+/**
+ * Explicit demo/mock repository. Constructed only when VITE_DATA_MODE=demo.
+ * Purchase and payout changes here mirror the server functions for the UI.
+ * They are not the production money path.
+ */
+export function createDemoRepository(): Repository {
+  let state = loadState();
+  let session = loadSession();
+
+  const persist = () => saveState(state);
+
+  const uid = () => {
+    if (!session) throw new RepoError('signed-out', 'Sign in required.');
+    return session.uid;
+  };
+
+  const refresh = () => {
+    state = loadState();
+    session = loadSession();
+  };
+
+  const signInExisting = (userId: string, provider: AuthProvider, placeholderAuth: boolean): AuthSession => {
+    const user = state.users.find((item) => item.uid === userId);
+    if (!user) throw new RepoError('not-found', 'Account not found.');
+    const next: AuthSession = {
+      uid: user.uid,
+      phone: user.phone,
+      provider,
+      placeholderAuth,
+    };
+    session = next;
+    saveSession(next);
+    return next;
+  };
+
+  return {
+    mode: 'demo',
+    async getSession() {
+      refresh();
+      return session;
+    },
+    async beginPhoneSignIn(e164: string): Promise<PhoneStart> {
+      refresh();
+      const denial = await denialKey(e164);
+      if (state.ageDenials.includes(denial)) {
+        throw new RepoError('underage', 'This number is blocked by the 18+ gate.');
+      }
+      const existing = state.users.find((user) => user.phone === e164);
+      if (existing) {
+        return { status: 'signed-in', session: signInExisting(existing.uid, 'phone', true) };
+      }
+      const id = `user-${crypto.randomUUID()}`;
+      state = {
+        ...state,
+        users: [
+          ...state.users,
+          {
+            uid: id,
+            role: 'user',
+            phone: e164,
+            provider: 'phone',
+            dateOfBirth: null,
+            displayName: '',
+            createdAt: nowIso(),
+            onboardingComplete: false,
+            locale: 'en',
+          },
+        ],
+      };
+      persist();
+      return { status: 'signed-in', session: signInExisting(id, 'phone', true) };
+    },
+    async confirmPhoneCode() {
+      throw new RepoError('demo-sms', 'Demo mode does not send SMS codes.');
+    },
+    async signInWithProvider(provider: 'apple' | 'google') {
+      refresh();
+      const id = `user-${provider}-${crypto.randomUUID()}`;
+      state = {
+        ...state,
+        users: [
+          ...state.users,
+          {
+            uid: id,
+            role: 'user',
+            phone: null,
+            provider,
+            dateOfBirth: null,
+            displayName: '',
+            createdAt: nowIso(),
+            onboardingComplete: false,
+            locale: 'en',
+          },
+        ],
+      };
+      persist();
+      return signInExisting(id, provider, true);
+    },
+    async signOut() {
+      session = null;
+      saveSession(null);
+    },
+    async getAgeGateDenied() {
+      refresh();
+      if (!session) return false;
+      const user = state.users.find((item) => item.uid === session?.uid);
+      const keys = [await denialKey(`uid:${session.uid}`)];
+      if (user?.phone) keys.push(await denialKey(user.phone));
+      return keys.some((key) => state.ageDenials.includes(key));
+    },
+    async rejectUnderage(dateOfBirth: string) {
+      const current = uid();
+      const user = state.users.find((item) => item.uid === current);
+      const keys = [await denialKey(`uid:${current}`)];
+      if (user?.phone) keys.push(await denialKey(user.phone));
+      state = deleteAccount(state, current);
+      state = { ...state, ageDenials: [...new Set([...state.ageDenials, ...keys])] };
+      persist();
+      session = null;
+      saveSession(null);
+      void dateOfBirth;
+    },
+    async getMe() {
+      refresh();
+      if (!session) return null;
+      return state.users.find((user) => user.uid === session?.uid) ?? null;
+    },
+    async completeOnboarding(input: OnboardingInput) {
+      try {
+        state = completeOnboarding(state, uid(), input, nowIso());
+      } catch (error) {
+        throw new RepoError('onboarding', error instanceof Error ? error.message : 'Onboarding failed.');
+      }
+      persist();
+      return state.users.find((user) => user.uid === uid())!;
+    },
+    async getDiscovery() {
+      refresh();
+      return visibleProfiles(state, uid());
+    },
+    async likeUser(toUserId: string) {
+      try {
+        const result = like(state, uid(), toUserId, nowIso());
+        state = result.state;
+        persist();
+        return { matched: result.matched, matchId: result.matchId, chatId: result.chatId };
+      } catch (error) {
+        throw new RepoError('like', error instanceof Error ? error.message : 'Like failed.');
+      }
+    },
+    async passUser(toUserId: string) {
+      state = pass(state, uid(), toUserId, nowIso());
+      persist();
+    },
+    async getMatches() {
+      refresh();
+      const me = uid();
+      const blocked = new Set(
+        state.blocks.flatMap((item) => (item.blockerId === me ? [item.blockedId] : item.blockedId === me ? [item.blockerId] : [])),
+      );
+      return state.matches
+        .filter((match) => match.userIds.includes(me))
+        .map((match) => {
+          const other = match.userIds[0] === me ? match.userIds[1] : match.userIds[0];
+          return { match, profile: blocked.has(other) ? null : profileFor(state, other), hidden: blocked.has(other) };
+        })
+        .filter((item) => !item.hidden)
+        .map(({ match, profile }) => ({ match, profile }));
+    },
+    async getChats() {
+      refresh();
+      const me = uid();
+      return visibleChats(state, me).map((chat) => {
+        const other = chat.participantIds[0] === me ? chat.participantIds[1] : chat.participantIds[0];
+        return { chat, profile: profileFor(state, other) };
+      });
+    },
+    async getMessages(chatId: string) {
+      refresh();
+      const chat = visibleChats(state, uid()).find((item) => item.id === chatId);
+      if (!chat) return [];
+      return [...(state.messages[chatId] ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    },
+    async sendMessage(chatId: string, text: string) {
+      try {
+        const result = sendMessage(state, uid(), chatId, text, nowIso());
+        state = result.state;
+        persist();
+        return result.message;
+      } catch (error) {
+        throw new RepoError('moderation', error instanceof Error ? error.message : 'Message was not sent.');
+      }
+    },
+    async fileReport(input: ReportInput) {
+      const result = fileReport(state, uid(), input, nowIso());
+      state = result.state;
+      persist();
+      return result.report;
+    },
+    async blockUser(userId: string) {
+      state = block(state, uid(), userId, nowIso());
+      persist();
+    },
+    async unblockUser(userId: string) {
+      state = unblock(state, uid(), userId);
+      persist();
+    },
+    async listBlocks() {
+      refresh();
+      const me = uid();
+      return state.blocks
+        .filter((entry) => entry.blockerId === me)
+        .map((entry) => ({ block: entry, profile: profileFor(state, entry.blockedId) }));
+    },
+    async listCreators() {
+      refresh();
+      return visibleCreators(state, uid());
+    },
+    async getCreatorPage(id: string) {
+      refresh();
+      const creator = visibleCreators(state, uid()).find((item) => item.uid === id);
+      if (!creator) return null;
+      const posts = state.posts.filter((post) => post.creatorId === id && post.reviewStatus === 'approved');
+      return { creator, posts };
+    },
+    async getMyCreator() {
+      refresh();
+      return state.creators.find((creator) => creator.uid === uid()) ?? null;
+    },
+    async listMyPosts() {
+      refresh();
+      return state.posts.filter((post) => post.creatorId === uid());
+    },
+    async myEntitlements() {
+      refresh();
+      return state.entitlements.filter((item) => item.userId === uid() && item.active);
+    },
+    async startCreatorProfile(input: CreatorStartInput) {
+      try {
+        state = startCreator(state, uid(), input, nowIso());
+      } catch (error) {
+        throw new RepoError('creator', error instanceof Error ? error.message : 'Could not start creator profile.');
+      }
+      persist();
+      return state.creators.find((creator) => creator.uid === uid())!;
+    },
+    async startKyc() {
+      const result = startKyc(state, uid(), 'didit', nowIso());
+      state = result.state;
+      persist();
+      return result.session;
+    },
+    async completeStubKyc(result: 'verified' | 'rejected') {
+      state = completeStubKyc(state, uid(), result);
+      persist();
+      return state.creators.find((creator) => creator.uid === uid())!;
+    },
+    async createPost(input: PostInput) {
+      try {
+        const result = createPost(state, uid(), input, nowIso());
+        state = result.state;
+        persist();
+        return result.post;
+      } catch (error) {
+        throw new RepoError('post', error instanceof Error ? error.message : 'Post failed.');
+      }
+    },
+    async purchase(input: PurchaseInput) {
+      try {
+        const result = purchase(state, uid(), input.kind, input.productId, input.platform, createStubIapToken(), nowIso());
+        state = result.state;
+        persist();
+        return result.purchase;
+      } catch (error) {
+        throw new RepoError('purchase', error instanceof Error ? error.message : 'Purchase failed.');
+      }
+    },
+    async getBalance() {
+      refresh();
+      return state.balances.find((balance) => balance.uid === uid()) ?? null;
+    },
+    async requestPayout(amountCents: number) {
+      try {
+        const result = requestPayout(state, uid(), amountCents, nowIso());
+        state = result.state;
+        persist();
+        return result.payout;
+      } catch (error) {
+        throw new RepoError('payout', error instanceof Error ? error.message : 'Payout failed.');
+      }
+    },
+    async exportData() {
+      refresh();
+      return exportData(state, uid(), nowIso());
+    },
+    async deleteAccount() {
+      const current = uid();
+      state = deleteAccount(state, current);
+      persist();
+      session = null;
+      saveSession(null);
+    },
+    async listReportsForAdmin() {
+      refresh();
+      const me = state.users.find((user) => user.uid === uid());
+      if (me?.role !== 'admin') throw new RepoError('forbidden', 'Admin only.');
+      return [...state.reports].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    async reviewReport(id: string, status: ReportStatus, note: string) {
+      try {
+        state = reviewReport(state, uid(), id, status, note, nowIso());
+      } catch (error) {
+        throw new RepoError('forbidden', error instanceof Error ? error.message : 'Update failed.');
+      }
+      persist();
+    },
+    async listPendingPostsForAdmin() {
+      refresh();
+      const me = state.users.find((user) => user.uid === uid());
+      if (me?.role !== 'admin') throw new RepoError('forbidden', 'Admin only.');
+      return state.posts.filter((post) => post.reviewStatus === 'pending');
+    },
+    async reviewPost(id: string, status: 'approved' | 'rejected', note: string) {
+      try {
+        state = reviewPost(state, uid(), id, status, note);
+      } catch (error) {
+        throw new RepoError('forbidden', error instanceof Error ? error.message : 'Update failed.');
+      }
+      persist();
+    },
+    async resetDemo() {
+      state = createSeedState();
+      persist();
+      session = null;
+      saveSession(null);
+    },
+  };
+}
+
+export const demoPhones = DEMO_PHONES;

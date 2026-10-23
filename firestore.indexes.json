@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "creatorPosts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "creatorId", "order": "ASCENDING" },
+        { "fieldPath": "reviewStatus", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
