@@ -16,7 +16,8 @@ export type Route =
   | { name: 'studio' }
   | { name: 'admin' }
   | { name: 'policy' }
-  | { name: 'settings' };
+  | { name: 'settings' }
+  | { name: 'public-profile'; uid: string };
 
 interface AppContextValue {
   repo: Repository;
@@ -37,6 +38,23 @@ interface AppContextValue {
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
+
+function sharedProfileUid(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/p\/([^/]+)$/);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function signedInHome(): Route[] {
+  const uid = sharedProfileUid();
+  const main: Route = { name: 'main', tab: 'discover' };
+  return uid ? [main, { name: 'public-profile', uid }] : [main];
+}
 
 export function AppProvider({ repo, children }: { repo: Repository; children: ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -63,7 +81,7 @@ export function AppProvider({ repo, children }: { repo: Repository; children: Re
         if (cancelled) return;
         setSession(existing);
         setMe(user);
-        setStack([user?.onboardingComplete ? { name: 'main', tab: 'discover' } : { name: 'onboarding' }]);
+        setStack(user?.onboardingComplete ? signedInHome() : [{ name: 'onboarding' }]);
       } finally {
         if (!cancelled) setBooting(false);
       }
@@ -105,7 +123,7 @@ export function AppProvider({ repo, children }: { repo: Repository; children: Re
         const user = await repo.getMe();
         setSession(next);
         setMe(user);
-        setStack([user?.onboardingComplete ? { name: 'main', tab: 'discover' } : { name: 'onboarding' }]);
+        setStack(user?.onboardingComplete ? signedInHome() : [{ name: 'onboarding' }]);
       },
       finishOnboarding: async () => {
         const user = await repo.getMe();

@@ -35,7 +35,7 @@ Phone SMS, Sign in with Apple, and Google are real Firebase Auth calls in fireba
 ```bash
 cd functions && npm install && npm run build
 firebase functions:secrets:set GEMINI_API_KEY
-firebase deploy --only firestore:rules,functions
+firebase deploy --only firestore:rules,storage,functions
 ```
 
 Give an admin their role in the console after onboarding: set `users/{uid}.role` to `admin`. Clients cannot write that field.
@@ -48,6 +48,7 @@ Give an admin their role in the console after onboarding: set `users/{uid}.role`
 - Identity checks name Didit or Veriff but do not call them. `completeStubKyc` simulates a result unless `KYC_MODE=live`.
 - Purchases are shaped like Apple / Google in-app purchases. `StubIapVerifier` does not charge a store.
 - Payouts call an Airwallex-shaped provider that does not transfer money. Only Cloud Functions can write balances, purchases, and payouts.
-- Gemini moderation runs only after the functions secret is set. Until then, `sendMessage` and `submitCreatorPost` fail closed.
+- Gemini moderation runs only after the functions secret is set. Until then, `sendMessage`, `submitCreatorPost`, profile text, and profile photos fail closed.
+- Profile photo upload needs Storage. Rules for `users/{uid}/photos` are in `storage.rules`. See [docs/profile-edit-setup.md](docs/profile-edit-setup.md). `firestore.rules` is unchanged.
 
 The functions have not been deployed from this repository, and there is no automated test against the Firebase emulators.

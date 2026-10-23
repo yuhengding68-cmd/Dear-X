@@ -1,3 +1,4 @@
+import type { NewProfilePhoto, ProfileEditResult, ProfileEditor, ProfileTextInput } from '../domain/profileEdit';
 import type {
   AuthSession,
   Balance,
@@ -56,6 +57,14 @@ export interface Repository {
   /** Public dating profile for the signed-in user. Null before onboarding. */
   getMyProfile(): Promise<DatingProfile | null>;
   completeOnboarding(input: OnboardingInput): Promise<PrivateUser>;
+  /** Public profile plus owner-only photo and text review state. */
+  getProfileEditor(): Promise<ProfileEditor>;
+  submitProfileText(input: ProfileTextInput): Promise<ProfileEditResult>;
+  addProfilePhoto(input: NewProfilePhoto): Promise<ProfileEditor>;
+  reorderProfilePhotos(photoIds: string[]): Promise<ProfileEditor>;
+  deleteProfilePhoto(photoId: string): Promise<ProfileEditor>;
+  /** Approved public profile only. No phone, date of birth, or draft text. */
+  getPublicProfile(uid: string): Promise<DatingProfile | null>;
   getDiscovery(): Promise<DatingProfile[]>;
   likeUser(toUserId: string): Promise<LikeOutcome>;
   passUser(toUserId: string): Promise<void>;

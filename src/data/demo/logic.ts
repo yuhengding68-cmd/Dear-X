@@ -2,6 +2,27 @@ import { ageOn, isAtLeast18 } from '../../domain/age';
 import { assertPrice, planPurchase } from '../../domain/commerce';
 import { applyLike, blockedSet, isBlockedPair } from '../../domain/matching';
 import { moderateWithKeywordStub } from '../../domain/moderation';
+import {
+  isProfilePhotoId,
+  legacyPhotos,
+  moderateProfileText,
+  normalizeProfileText,
+  photoContentVerdict,
+  photoUploadIssue,
+  profileAfterTextReview,
+  profileTextChanged,
+  projectPublicPhotos,
+  removePhoto,
+  reorderPhotos,
+  settlePhotoModeration,
+  upsertPhoto,
+  type NewProfilePhoto,
+  type ProfileEditResult,
+  type ProfileEditor,
+  type ProfileEditorDraft,
+  type ProfilePhotoRecord,
+  type ProfileTextInput,
+} from '../../domain/profileEdit';
 import type {
   Balance,
   Block,
@@ -352,6 +373,137 @@ export function exportData(state: DemoState, uid: string, now: string): DataExpo
   };
 }
 
+function draftMap(state: DemoState): Record<string, ProfileEditorDraft> {
+  return state.profileDrafts ?? {};
+}
+
+function galleryOf(state: DemoState, uid: string, profile: DatingProfile): ProfilePhotoRecord[] {
+  return draftMap(state)[uid]?.photos ?? legacyPhotos(profile);
+}
+
+function editorOf(profile: DatingProfile | null, photos: ProfilePhotoRecord[], draft: ProfileEditorDraft | undefined): ProfileEditor {
+  return {
+    profile,
+    photos,
+    textStatus: draft?.textStatus ?? 'none',
+    textReason: draft?.textReason ?? null,
+    textCategories: draft?.textCategories ?? [],
+    textDraft: draft?.textDraft ?? null,
+  };
+}
+
+export function profileEditor(state: DemoState, uid: string): ProfileEditor {
+  const profile = profileFor(state, uid);
+  const draft = draftMap(state)[uid];
+  return editorOf(profile, profile ? galleryOf(state, uid, profile) : [], draft);
+}
+
+export function submitProfileText(state: DemoState, uid: string, input: ProfileTextInput): { state: DemoState; result: ProfileEditResult } {
+  const user = requireUser(state, uid);
+  if (!user.onboardingComplete) throw new Error('Finish onboarding first.');
+  const profile = profileFor(state, uid);
+  if (!profile) throw new Error('Finish onboarding first.');
+  const parsed = normalizeProfileText(input);
+  if (!parsed.ok) throw new Error(parsed.field);
+  const photos = galleryOf(state, uid, profile);
+  const existing = draftMap(state)[uid];
+  if (!profileTextChanged(profile, parsed.value)) {
+    const editor = editorOf(profile, photos, existing);
+    return { state, result: { status: 'approved', reason: '', categories: [], profile, editor } };
+  }
+  const verdict = moderateProfileText(parsed.value);
+  const published = profileAfterTextReview(profile, parsed.value, verdict.allowed);
+  const draft: ProfileEditorDraft = {
+    photos: existing?.photos ?? null,
+    textStatus: verdict.allowed ? 'approved' : 'rejected',
+    textReason: verdict.allowed ? null : verdict.reason,
+    textCategories: verdict.allowed ? [] : verdict.categories,
+    textDraft: verdict.allowed ? null : parsed.value,
+  };
+  const next: DemoState = {
+    ...state,
+    profiles: state.profiles.map((item) => (item.uid === uid ? published : item)),
+    users: verdict.allowed
+      ? state.users.map((item) => (item.uid === uid ? { ...item, displayName: parsed.value.displayName } : item))
+      : state.users,
+    profileDrafts: { ...draftMap(state), [uid]: draft },
+  };
+  return {
+    state: next,
+    result: {
+      status: verdict.allowed ? 'approved' : 'rejected',
+      reason: verdict.allowed ? '' : verdict.reason,
+      categories: verdict.allowed ? [] : verdict.categories,
+      profile: published,
+      editor: editorOf(published, photos, draft),
+    },
+  };
+}
+
+function withPhotos(state: DemoState, uid: string, profile: DatingProfile, photos: ProfilePhotoRecord[]): DemoState {
+  const published = projectPublicPhotos(profile, photos);
+  const existing = draftMap(state)[uid];
+  const draft: ProfileEditorDraft = {
+    photos,
+    textStatus: existing?.textStatus ?? 'none',
+    textReason: existing?.textReason ?? null,
+    textCategories: existing?.textCategories ?? [],
+    textDraft: existing?.textDraft ?? null,
+  };
+  return {
+    ...state,
+    profiles: state.profiles.map((item) => (item.uid === uid ? published : item)),
+    profileDrafts: { ...draftMap(state), [uid]: draft },
+  };
+}
+
+export function addProfilePhoto(state: DemoState, uid: string, input: NewProfilePhoto): { state: DemoState; editor: ProfileEditor; photo: ProfilePhotoRecord } {
+  requireUser(state, uid);
+  const profile = profileFor(state, uid);
+  if (!profile) throw new Error('Finish onboarding first.');
+  if (!isProfilePhotoId(input.id)) throw new Error('photoId');
+  const issue = photoUploadIssue(input.contentType, input.byteLength);
+  if (issue) throw new Error(issue);
+  const verdict = photoContentVerdict(input.fileName);
+  const photo = settlePhotoModeration(
+    {
+      id: input.id,
+      storagePath: `users/${uid}/photos/${input.id}`,
+      status: 'pending',
+      reason: null,
+      publicUrl: null,
+      ownerUrl: input.previewUrl,
+    },
+    verdict.allowed
+      ? { allowed: true, reason: '', categories: [] }
+      : { allowed: false, reason: verdict.reason, categories: verdict.categories },
+    verdict.allowed ? input.previewUrl : null,
+  );
+  const photos = upsertPhoto(galleryOf(state, uid, profile), photo);
+  if (!photos) throw new Error('photos');
+  const next = withPhotos(state, uid, profile, photos);
+  const published = profileFor(next, uid);
+  return { state: next, photo, editor: editorOf(published, photos, next.profileDrafts?.[uid]) };
+}
+
+export function reorderProfilePhotos(state: DemoState, uid: string, ids: string[]): { state: DemoState; editor: ProfileEditor } {
+  const profile = profileFor(state, uid);
+  if (!profile) throw new Error('Finish onboarding first.');
+  const photos = reorderPhotos(galleryOf(state, uid, profile), ids);
+  if (!photos) throw new Error('photoIds');
+  const next = withPhotos(state, uid, profile, photos);
+  return { state: next, editor: editorOf(profileFor(next, uid), photos, next.profileDrafts?.[uid]) };
+}
+
+export function deleteProfilePhoto(state: DemoState, uid: string, id: string): { state: DemoState; editor: ProfileEditor } {
+  const profile = profileFor(state, uid);
+  if (!profile) throw new Error('Finish onboarding first.');
+  const photos = removePhoto(galleryOf(state, uid, profile), id);
+  if (!photos) throw new Error('Photo not found.');
+  const next = withPhotos(state, uid, profile, photos);
+  return { state: next, editor: editorOf(profileFor(next, uid), photos, next.profileDrafts?.[uid]) };
+}
+
 export function deleteAccount(state: DemoState, uid: string): DemoState {
   const chatIds = new Set(state.chats.filter((chat) => chat.participantIds.includes(uid)).map((chat) => chat.id));
   const messages = { ...state.messages };
@@ -374,6 +526,7 @@ export function deleteAccount(state: DemoState, uid: string): DemoState {
     balances: state.balances.filter((balance) => balance.uid !== uid),
     payouts: state.payouts.filter((payout) => payout.creatorId !== uid),
     kycSessions: state.kycSessions.filter((session) => session.userId !== uid),
+    profileDrafts: Object.fromEntries(Object.entries(draftMap(state)).filter(([id]) => id !== uid)),
   };
 }
 

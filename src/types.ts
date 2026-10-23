@@ -47,6 +47,8 @@ export interface DatingProfile {
   photoUrl: string | null;
   /** Extra photos for the card carousel (photoUrl first). Optional. */
   photoUrls?: string[];
+  /** Coarse job label from the original swipe card. Optional. */
+  job?: string;
   /** Real-person (selfie) verification passed. Set by the server only. */
   verified?: boolean;
 }

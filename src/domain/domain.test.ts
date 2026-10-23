@@ -7,8 +7,15 @@ import { resolveAppConfig } from '../config';
 import { creatorShareCents, planPurchase } from './commerce';
 import { applyLike } from './matching';
 import { moderateWithKeywordStub } from './moderation';
+import {
+  profileSharePayload,
+  projectPublicPhotos,
+  settlePhotoModeration,
+  sharePayloadLeaksPrivate,
+  textFromProfile,
+} from './profileEdit';
 import { normalizePhone } from './phone';
-import { completeOnboarding, createPost, deleteAccount, exportData, like, sendMessage, visibleCreators, visibleProfiles } from '../data/demo/logic';
+import { addProfilePhoto, completeOnboarding, createPost, deleteAccount, deleteProfilePhoto, exportData, like, reorderProfilePhotos, sendMessage, submitProfileText, visibleCreators, visibleProfiles } from '../data/demo/logic';
 import { createSeedState } from '../data/demo/seed';
 import type { Creator } from '../types';
 
@@ -197,5 +204,94 @@ assert.equal(removed.users.some((user) => user.uid === 'user-alex'), false);
 assert.equal(removed.profiles.some((profile) => profile.uid === 'user-alex'), false);
 assert.equal(removed.messages['chat_user-alex_user-mei'], undefined);
 assert.equal(removed.reports.some((report) => report.reporterId === 'deleted-user'), true);
+
+const alex = seed.profiles.find((profile) => profile.uid === 'user-alex');
+assert.ok(alex);
+const alexBefore = alex.bio;
+const invalidCity = { ...textFromProfile(alex), city: 'Bondi Beach' };
+assert.throws(() => submitProfileText(seed, 'user-alex', invalidCity));
+assert.throws(() => submitProfileText(seed, 'user-alex', { ...textFromProfile(alex), displayName: 'A' }));
+
+const rejectedText = submitProfileText(seed, 'user-alex', { ...textFromProfile(alex), bio: 'send nudes', job: 'Student' });
+assert.equal(rejectedText.result.status, 'rejected');
+assert.equal(rejectedText.result.profile.bio, alexBefore);
+assert.equal(rejectedText.result.profile.job, undefined);
+assert.equal(rejectedText.state.users.find((user) => user.uid === 'user-alex')?.displayName, 'Alex Chen');
+assert.equal(hasPrivateAccountField(rejectedText.result.profile), false);
+
+const approvedText = submitProfileText(rejectedText.state, 'user-alex', {
+  ...textFromProfile(rejectedText.result.profile),
+  bio: 'Tea and quiet films.',
+  job: 'Student',
+});
+assert.equal(approvedText.result.status, 'approved');
+assert.equal(approvedText.result.profile.bio, 'Tea and quiet films.');
+assert.equal(approvedText.result.profile.job, 'Student');
+assert.equal(approvedText.result.profile.city, 'Sydney');
+assert.equal(hasPrivateAccountField(approvedText.result.profile), false);
+assert.equal(approvedText.state.users.find((user) => user.uid === 'user-alex')?.dateOfBirth, '2001-04-02');
+
+const added = addProfilePhoto(approvedText.state, 'user-alex', {
+  id: 'photo-aaa-111',
+  fileName: 'portrait.png',
+  contentType: 'image/png',
+  byteLength: 32,
+  previewUrl: 'https://cdn.example/portrait.png',
+});
+assert.equal(added.photo.status, 'approved');
+assert.ok(added.editor.profile?.photoUrls?.includes('https://cdn.example/portrait.png'));
+
+const blockedPhoto = addProfilePhoto(added.state, 'user-alex', {
+  id: 'photo-bbb-222',
+  fileName: 'nudes.png',
+  contentType: 'image/png',
+  byteLength: 32,
+  previewUrl: 'https://cdn.example/private-nude.png',
+});
+assert.equal(blockedPhoto.photo.status, 'rejected');
+assert.equal(blockedPhoto.photo.publicUrl, null);
+assert.equal(blockedPhoto.editor.profile?.photoUrls?.includes('https://cdn.example/private-nude.png'), false);
+assert.equal(JSON.stringify(blockedPhoto.editor.profile).includes('ownerUrl'), false);
+assert.equal(blockedPhoto.editor.profile?.bio, 'Tea and quiet films.');
+
+const ids = blockedPhoto.editor.photos.map((photo) => photo.id);
+const portraitFirst = [ids.find((id) => id === 'photo-aaa-111')!, ...ids.filter((id) => id !== 'photo-aaa-111')];
+const ordered = reorderProfilePhotos(blockedPhoto.state, 'user-alex', portraitFirst);
+assert.equal(ordered.editor.profile?.photoUrl, 'https://cdn.example/portrait.png');
+assert.equal(ordered.editor.profile?.photoUrls?.includes('https://cdn.example/private-nude.png'), false);
+
+const removedPhoto = deleteProfilePhoto(ordered.state, 'user-alex', 'photo-aaa-111');
+assert.equal(removedPhoto.editor.profile?.photoUrls?.includes('https://cdn.example/portrait.png'), false);
+const stillRejected = removedPhoto.editor.photos.find((photo) => photo.id === 'photo-bbb-222');
+assert.equal(stillRejected?.status, 'rejected');
+assert.equal(removedPhoto.editor.profile?.photoUrls?.includes('https://cdn.example/private-nude.png'), false);
+
+const unavailable = settlePhotoModeration(
+  { id: 'photo-ccc-333', storagePath: 'users/user-alex/photos/photo-ccc-333', status: 'pending', reason: null, publicUrl: null },
+  { unavailable: true },
+  'https://cdn.example/should-not-publish.png',
+);
+assert.equal(unavailable.status, 'pending');
+assert.equal(unavailable.publicUrl, null);
+const denied = settlePhotoModeration(unavailable, { allowed: false, reason: 'nudity', categories: ['nudity'] }, 'https://cdn.example/should-not-publish.png');
+const allowed = settlePhotoModeration(
+  { ...unavailable, id: 'photo-ddd-444' },
+  { allowed: true, reason: '', categories: [] },
+  'https://cdn.example/ok.png',
+);
+const projected = projectPublicPhotos(approvedText.result.profile, [denied, allowed]);
+assert.deepEqual(projected.photoUrls, ['https://cdn.example/ok.png']);
+assert.equal(projected.photoUrl, 'https://cdn.example/ok.png');
+
+const share = profileSharePayload(approvedText.result.profile, 'https://dearx.app/');
+assert.equal(share.url, 'https://dearx.app/p/user-alex');
+assert.equal(share.text.includes('Sydney'), true);
+assert.equal(share.text.includes('Tea and quiet films'), false);
+assert.equal(sharePayloadLeaksPrivate(share), false);
+assert.equal(share.url.includes('+61'), false);
+assert.equal(JSON.stringify(share).includes('2001-04-02'), false);
+
+const cleared = deleteAccount(blockedPhoto.state, 'user-alex');
+assert.equal(cleared.profileDrafts?.['user-alex'], undefined);
 
 console.log('domain tests passed');

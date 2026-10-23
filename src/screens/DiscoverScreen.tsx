@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { BadgeCheck, Gift as GiftIcon, Info, MapPin, Search, RotateCcw, ThumbsUp, X } from 'lucide-react';
+import { BadgeCheck, Briefcase, Gift as GiftIcon, Info, MapPin, Search, RotateCcw, ThumbsUp, X } from 'lucide-react';
 import type { DatingProfile } from '../types';
 import { useI18n } from '../i18n';
 import { useApp } from '../state/AppProvider';
@@ -169,6 +169,12 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
                     <span className="text-sm font-medium">{profile.city}</span>
                   </div>
                 )}
+                {profile.job ? (
+                  <div className="flex items-center gap-1 glass-pill px-2 py-0.5 rounded-lg">
+                    <Briefcase className="w-3 h-3" />
+                    <span className="text-sm font-medium">{profile.job}</span>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

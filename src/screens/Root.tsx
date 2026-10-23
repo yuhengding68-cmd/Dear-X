@@ -15,6 +15,7 @@ import { PolicyScreen } from './PolicyScreen';
 import { SafetyScreen } from './SafetyScreen';
 import { CompassScreen } from './CompassScreen';
 import { ProfileScreen } from './ProfileScreen';
+import { PublicProfileScreen } from './PublicProfileScreen';
 import { SettingsScreen } from './SettingsScreen';
 
 const TABS: Tab[] = ['discover', 'matches', 'chats', 'creators', 'safety'];
@@ -48,16 +49,17 @@ export function Root() {
     return <AuthScreen />;
   }
 
-  if (app.session && (app.route.name === 'main' || app.route.name === 'chat')) {
+  if (app.session && (app.route.name === 'main' || app.route.name === 'chat' || app.route.name === 'public-profile')) {
     const isChat = app.route.name === 'chat';
+    const isPublic = app.route.name === 'public-profile';
     const tab = app.route.name === 'main' ? app.route.tab : 'chats';
     // Original DearX shell: same header and 5 bottom tabs, same order. Unbuilt features show "Coming soon".
     const navItems: { key: string; active: boolean; onClick: () => void; color: string; dot: string; icon: ReactNode }[] = [
-      { key: 'swipe', active: tab === 'discover', onClick: () => app.go({ name: 'main', tab: 'discover' }), color: 'text-brand-blue bg-brand-blue/10', dot: 'bg-brand-blue', icon: <div className="w-6 h-6 flex items-center justify-center"><LogoX className="w-5 h-5" /></div> },
-      { key: 'discover', active: tab === 'compass', onClick: () => app.go({ name: 'main', tab: 'compass' }), color: 'text-brand-purple bg-brand-purple/10', dot: 'bg-brand-purple', icon: <Compass className="w-6 h-6" /> },
-      { key: 'messages', active: tab === 'chats', onClick: () => app.go({ name: 'main', tab: 'chats' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <MessageCircle className="w-6 h-6" /> },
+      { key: 'swipe', active: !isPublic && tab === 'discover', onClick: () => app.go({ name: 'main', tab: 'discover' }), color: 'text-brand-blue bg-brand-blue/10', dot: 'bg-brand-blue', icon: <div className="w-6 h-6 flex items-center justify-center"><LogoX className="w-5 h-5" /></div> },
+      { key: 'discover', active: !isPublic && tab === 'compass', onClick: () => app.go({ name: 'main', tab: 'compass' }), color: 'text-brand-purple bg-brand-purple/10', dot: 'bg-brand-purple', icon: <Compass className="w-6 h-6" /> },
+      { key: 'messages', active: !isPublic && tab === 'chats', onClick: () => app.go({ name: 'main', tab: 'chats' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <MessageCircle className="w-6 h-6" /> },
       { key: 'wallet', active: false, onClick: comingSoon, color: 'text-brand-yellow bg-brand-yellow/10', dot: 'bg-brand-yellow', icon: <Wallet className="w-6 h-6" /> },
-      { key: 'profile', active: tab === 'profile', onClick: () => app.go({ name: 'main', tab: 'profile' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <UserIcon className="w-6 h-6" /> },
+      { key: 'profile', active: !isPublic && tab === 'profile', onClick: () => app.go({ name: 'main', tab: 'profile' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <UserIcon className="w-6 h-6" /> },
     ];
     return (
       <div className="h-screen w-full flex flex-col bg-[#12122A] text-white overflow-hidden relative font-sans">
@@ -90,15 +92,16 @@ export function Root() {
         <main className={`flex-1 flex flex-col relative z-10 overflow-hidden ${isChat ? '' : 'pt-16 pb-24'}`}>
           {app.notice ? <p className="px-4 pt-3 text-sm text-emerald-200">{app.notice}</p> : null}
           {app.error ? <p className="px-4 pt-3 text-sm text-red-300">{app.error}</p> : null}
-          <div className={isChat || tab === 'discover' || tab === 'compass' || tab === 'profile' || tab === 'chats' ? 'flex-1 relative min-h-0' : 'flex-1 overflow-y-auto'}>
+          <div className={isChat || isPublic || tab === 'discover' || tab === 'compass' || tab === 'profile' || tab === 'chats' ? 'flex-1 relative min-h-0' : 'flex-1 overflow-y-auto'}>
             {app.route.name === 'chat' ? <ChatThreadScreen chatId={app.route.chatId} /> : null}
-            {!isChat && tab === 'discover' ? <DiscoverScreen /> : null}
-            {!isChat && tab === 'compass' ? <CompassScreen /> : null}
-            {!isChat && tab === 'matches' ? <MatchesScreen /> : null}
-            {!isChat && tab === 'chats' ? <ChatListScreen /> : null}
-            {!isChat && tab === 'creators' ? <CreatorListScreen /> : null}
-            {!isChat && tab === 'safety' ? <SafetyScreen /> : null}
-            {!isChat && tab === 'profile' ? <ProfileScreen /> : null}
+            {app.route.name === 'public-profile' ? <PublicProfileScreen uid={app.route.uid} /> : null}
+            {!isChat && !isPublic && tab === 'discover' ? <DiscoverScreen /> : null}
+            {!isChat && !isPublic && tab === 'compass' ? <CompassScreen /> : null}
+            {!isChat && !isPublic && tab === 'matches' ? <MatchesScreen /> : null}
+            {!isChat && !isPublic && tab === 'chats' ? <ChatListScreen /> : null}
+            {!isChat && !isPublic && tab === 'creators' ? <CreatorListScreen /> : null}
+            {!isChat && !isPublic && tab === 'safety' ? <SafetyScreen /> : null}
+            {!isChat && !isPublic && tab === 'profile' ? <ProfileScreen /> : null}
           </div>
         </main>
         {isChat ? null : (

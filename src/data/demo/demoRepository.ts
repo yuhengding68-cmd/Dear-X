@@ -1,6 +1,7 @@
 import { denialKey } from '../../domain/age';
 import { decidePhoneSignIn, EMPTY_PHONE_LIMIT, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from '../../domain/phoneSignInLimit';
 import { createStubIapToken } from '../../domain/commerce';
+import type { NewProfilePhoto, ProfileTextInput } from '../../domain/profileEdit';
 import type {
   AuthProvider,
   AuthSession,
@@ -15,15 +16,20 @@ import { RepoError } from '../errors';
 import type { PhoneStart, Repository } from '../repository';
 import {
   block,
+  addProfilePhoto,
   completeOnboarding,
   completeStubKyc,
+  deleteProfilePhoto,
   createPost,
   deleteAccount,
   exportData,
   fileReport,
   like,
   pass,
+  profileEditor,
   profileFor,
+  reorderProfilePhotos,
+  submitProfileText,
   purchase,
   requestPayout,
   reviewPost,
@@ -227,6 +233,54 @@ export function createDemoRepository(): Repository {
       }
       persist();
       return state.users.find((user) => user.uid === uid())!;
+    },
+    async getProfileEditor() {
+      refresh();
+      return profileEditor(state, uid());
+    },
+    async submitProfileText(input: ProfileTextInput) {
+      try {
+        const result = submitProfileText(state, uid(), input);
+        state = result.state;
+        persist();
+        return result.result;
+      } catch (error) {
+        throw new RepoError('profile', error instanceof Error ? error.message : 'profile');
+      }
+    },
+    async addProfilePhoto(input: NewProfilePhoto) {
+      try {
+        const result = addProfilePhoto(state, uid(), input);
+        state = result.state;
+        persist();
+        return result.editor;
+      } catch (error) {
+        throw new RepoError('profile', error instanceof Error ? error.message : 'profile');
+      }
+    },
+    async reorderProfilePhotos(photoIds: string[]) {
+      try {
+        const result = reorderProfilePhotos(state, uid(), photoIds);
+        state = result.state;
+        persist();
+        return result.editor;
+      } catch (error) {
+        throw new RepoError('profile', error instanceof Error ? error.message : 'profile');
+      }
+    },
+    async deleteProfilePhoto(photoId: string) {
+      try {
+        const result = deleteProfilePhoto(state, uid(), photoId);
+        state = result.state;
+        persist();
+        return result.editor;
+      } catch (error) {
+        throw new RepoError('profile', error instanceof Error ? error.message : 'profile');
+      }
+    },
+    async getPublicProfile(profileId: string) {
+      refresh();
+      return profileFor(state, profileId);
     },
     async getDiscovery() {
       refresh();

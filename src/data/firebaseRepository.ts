@@ -27,6 +27,17 @@ import {
   where,
 } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { getStorage, ref, uploadBytes } from 'firebase/storage';
+import {
+  legacyPhotos,
+  normalizePhotoContentType,
+  type NewProfilePhoto,
+  type ProfileEditResult,
+  type ProfileEditor,
+  type ProfilePhotoRecord,
+  type ProfileTextInput,
+  type ProfileTextStatus,
+} from '../domain/profileEdit';
 import type {
   AuthSession,
   Balance,
@@ -58,6 +69,23 @@ import { loadIosNativeAuth } from './nativeAuth';
 import type { LikeOutcome, PhoneStart, Repository } from './repository';
 
 const REGION = 'australia-southeast1';
+
+function readEditor(profile: DatingProfile | null, userData: Record<string, unknown> | null): ProfileEditor {
+  const raw = userData?.profilePhotos;
+  const photos = Array.isArray(raw) && raw.length > 0 ? (raw as ProfilePhotoRecord[]) : legacyPhotos(profile);
+  const review = userData?.profileTextReview as
+    | { status?: ProfileTextStatus; reason?: string | null; categories?: string[]; draft?: ProfileTextInput | null }
+    | undefined;
+  const status = review?.status;
+  return {
+    profile,
+    photos,
+    textStatus: status === 'approved' || status === 'rejected' || status === 'pending' ? status : 'none',
+    textReason: typeof review?.reason === 'string' ? review.reason : null,
+    textCategories: Array.isArray(review?.categories) ? review.categories.map(String) : [],
+    textDraft: review?.draft ?? null,
+  };
+}
 
 function asError(error: unknown, code: string): RepoError {
   if (error instanceof RepoError) return error;
@@ -274,6 +302,57 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
       } catch (error) {
         throw asError(error, 'onboarding');
       }
+    },
+    async getProfileEditor() {
+      const uid = currentUid();
+      const [profileSnap, userSnap] = await Promise.all([getDoc(doc(db, 'profiles', uid)), getDoc(doc(db, 'users', uid))]);
+      const profile = profileSnap.exists() ? (profileSnap.data() as DatingProfile) : null;
+      return readEditor(profile, userSnap.exists() ? (userSnap.data() as Record<string, unknown>) : null);
+    },
+    async submitProfileText(input) {
+      try {
+        const result = await call<ProfileTextInput, ProfileEditResult>('submitProfileText')(input);
+        return result.data;
+      } catch (error) {
+        throw asError(error, 'profile');
+      }
+    },
+    async addProfilePhoto(input: NewProfilePhoto) {
+      if (!config.storageBucket) throw new RepoError('storage', 'storage');
+      if (!input.bytes) throw new RepoError('photo', 'photo');
+      const uid = currentUid();
+      const storage = getStorage(app);
+      await uploadBytes(ref(storage, `users/${uid}/photos/${input.id}`), input.bytes, {
+        contentType: normalizePhotoContentType(input.contentType),
+      });
+      try {
+        const result = await call<{ photoId: string }, { editor: ProfileEditor }>('registerProfilePhoto')({ photoId: input.id });
+        return result.data.editor;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        if (message.includes('moderation-unavailable')) throw new RepoError('moderation-unavailable', 'moderation-unavailable');
+        throw asError(error, 'profile');
+      }
+    },
+    async reorderProfilePhotos(photoIds) {
+      try {
+        const result = await call<{ photoIds: string[] }, { editor: ProfileEditor }>('reorderProfilePhotos')({ photoIds });
+        return result.data.editor;
+      } catch (error) {
+        throw asError(error, 'profile');
+      }
+    },
+    async deleteProfilePhoto(photoId) {
+      try {
+        const result = await call<{ photoId: string }, { editor: ProfileEditor }>('deleteProfilePhoto')({ photoId });
+        return result.data.editor;
+      } catch (error) {
+        throw asError(error, 'profile');
+      }
+    },
+    async getPublicProfile(profileId) {
+      const snap = await getDoc(doc(db, 'profiles', profileId));
+      return snap.exists() ? (snap.data() as DatingProfile) : null;
     },
     async getDiscovery() {
       const uid = currentUid();

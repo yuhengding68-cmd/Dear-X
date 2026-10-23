@@ -1,12 +1,28 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue, getFirestore, type DocumentSnapshot, type Query } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 import { defineSecret } from 'firebase-functions/params';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { ageOn, denialKey, isAtLeast18 } from './ageGate';
 import { decidePhoneSignIn, IP_SIGN_IN_LIMITS, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from './phoneSignInLimit';
-import { moderateText } from './geminiService';
+import { moderateImage, moderateText } from './geminiService';
+import {
+  isProfilePhotoId,
+  keywordProfileText,
+  legacyPhotos,
+  normalizeProfileText,
+  photoUploadIssue,
+  profileAfterTextReview,
+  profileTextChanged,
+  projectPublicPhotos,
+  removePhoto,
+  reorderPhotos,
+  upsertPhoto,
+  type ProfilePhotoRecord,
+  type PublicProfileShape,
+} from './profileEdit';
 import { LiveIapVerifier, StubIapVerifier, iapStubMode, mintStubReceipt, type IapReceipt } from './iap';
 import { createKycVendor, stubKycCompletionAllowed, stubsAllowed } from './kycVendor';
 import { createPayoutProvider } from './payoutProvider';
@@ -651,6 +667,262 @@ export const exportAccountData = onCall(callable, async (request) => {
   };
 });
 
+const photoCallable = { region: REGION, secrets: [GEMINI_API_KEY], memory: '512MiB' as const, timeoutSeconds: 60 };
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function asPhotos(value: unknown): ProfilePhotoRecord[] | null {
+  if (!Array.isArray(value)) return null;
+  const photos: ProfilePhotoRecord[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const photo = item as Partial<ProfilePhotoRecord>;
+    if (typeof photo.id !== 'string') continue;
+    const status = photo.status === 'approved' || photo.status === 'rejected' || photo.status === 'pending' ? photo.status : 'pending';
+    photos.push({
+      id: photo.id,
+      storagePath: typeof photo.storagePath === 'string' ? photo.storagePath : '',
+      status,
+      reason: typeof photo.reason === 'string' ? photo.reason : null,
+      publicUrl: typeof photo.publicUrl === 'string' ? photo.publicUrl : null,
+    });
+  }
+  return photos;
+}
+
+function profileShape(uid: string, data: Record<string, unknown> | undefined): PublicProfileShape {
+  return {
+    uid,
+    displayName: String(data?.displayName ?? ''),
+    age: typeof data?.age === 'number' ? data.age : 0,
+    gender: String(data?.gender ?? 'unspecified'),
+    bio: String(data?.bio ?? ''),
+    city: String(data?.city ?? ''),
+    distanceKm: typeof data?.distanceKm === 'number' ? data.distanceKm : null,
+    interests: asStringArray(data?.interests),
+    photoUrl: typeof data?.photoUrl === 'string' ? data.photoUrl : null,
+    photoUrls: asStringArray(data?.photoUrls),
+    ...(data?.verified === true ? { verified: true } : {}),
+    ...(typeof data?.job === 'string' && data.job ? { job: data.job } : {}),
+  };
+}
+
+function profileWrite(profile: PublicProfileShape): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    uid: profile.uid,
+    displayName: profile.displayName,
+    age: profile.age,
+    gender: profile.gender,
+    bio: profile.bio,
+    city: profile.city,
+    distanceKm: profile.distanceKm,
+    interests: profile.interests,
+    photoUrl: profile.photoUrl,
+    photoUrls: profile.photoUrls,
+    job: profile.job ? profile.job : FieldValue.delete(),
+  };
+  if (profile.verified) payload.verified = true;
+  for (const key of PRIVATE_PROFILE_KEYS) {
+    if (key in payload) throw new HttpsError('internal', 'Public profile cannot store private account fields.');
+  }
+  return payload;
+}
+
+async function loadGallery(uid: string, profile: PublicProfileShape): Promise<ProfilePhotoRecord[]> {
+  const user = await db.doc(`users/${uid}`).get();
+  const stored = asPhotos(user.get('profilePhotos'));
+  if (stored && stored.length > 0) return stored;
+  const urls = profile.photoUrls.length > 0 ? profile.photoUrls : profile.photoUrl ? [profile.photoUrl] : [];
+  return legacyPhotos(urls);
+}
+
+async function saveGallery(uid: string, photos: ProfilePhotoRecord[], profile: PublicProfileShape): Promise<PublicProfileShape> {
+  const next = projectPublicPhotos(profile, photos);
+  await db.doc(`users/${uid}`).set({ profilePhotos: photos }, { merge: true });
+  await db.doc(`profiles/${uid}`).set(profileWrite(next), { merge: true });
+  return next;
+}
+
+function editorFrom(profile: PublicProfileShape, photos: ProfilePhotoRecord[], review: Record<string, unknown> | null) {
+  const status = review?.status;
+  const textStatus = status === 'approved' || status === 'rejected' || status === 'pending' ? status : 'none';
+  const draft = review?.draft;
+  return {
+    profile,
+    photos,
+    textStatus,
+    textReason: typeof review?.reason === 'string' ? review.reason : null,
+    textCategories: asStringArray(review?.categories),
+    textDraft: draft && typeof draft === 'object' ? draft : null,
+  };
+}
+
+export const submitProfileText = onCall(moderated, async (request) => {
+  const uid = uidOf(request);
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (userSnap.get('onboardingComplete') !== true) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+  const data = payload(request);
+  const parsed = normalizeProfileText({
+    displayName: typeof data.displayName === 'string' ? data.displayName : '',
+    bio: typeof data.bio === 'string' ? data.bio : '',
+    job: typeof data.job === 'string' ? data.job : '',
+    city: typeof data.city === 'string' ? data.city : '',
+    interests: asStringArray(data.interests),
+  });
+  if (!parsed.ok) throw new HttpsError('invalid-argument', parsed.field);
+  const profileSnap = await db.doc(`profiles/${uid}`).get();
+  if (!profileSnap.exists) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+  const current = profileShape(uid, profileSnap.data());
+  const photos = await loadGallery(uid, current);
+  if (!profileTextChanged(current, parsed.value)) {
+    return {
+      status: 'approved' as const,
+      reason: '',
+      categories: [] as string[],
+      profile: current,
+      editor: editorFrom(current, photos, null),
+    };
+  }
+  const keyword = keywordProfileText(parsed.value);
+  let verdict = keyword;
+  if (keyword.allowed) {
+    try {
+      const labeled = [
+        `Name: ${parsed.value.displayName}`,
+        `Bio: ${parsed.value.bio}`,
+        parsed.value.job ? `Job: ${parsed.value.job}` : '',
+        `Interests: ${parsed.value.interests.join(', ')}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      verdict = await moderateText(GEMINI_API_KEY.value(), labeled, 'profile');
+    } catch {
+      throw new HttpsError('failed-precondition', 'moderation-unavailable');
+    }
+  }
+  const published = profileAfterTextReview(current, parsed.value, verdict.allowed);
+  const review = {
+    status: verdict.allowed ? 'approved' : 'rejected',
+    reason: verdict.allowed ? '' : verdict.reason,
+    categories: verdict.categories,
+    draft: verdict.allowed ? null : parsed.value,
+    updatedAt: new Date().toISOString(),
+  };
+  if (verdict.allowed) {
+    await db.doc(`profiles/${uid}`).set(profileWrite(published), { merge: true });
+    await db.doc(`users/${uid}`).set({ displayName: parsed.value.displayName, profileTextReview: review }, { merge: true });
+  } else {
+    await db.doc(`users/${uid}`).set({ profileTextReview: review }, { merge: true });
+  }
+  return {
+    status: verdict.allowed ? ('approved' as const) : ('rejected' as const),
+    reason: verdict.allowed ? '' : verdict.reason,
+    categories: verdict.categories,
+    profile: published,
+    editor: editorFrom(published, photos, review),
+  };
+});
+
+export const registerProfilePhoto = onCall(photoCallable, async (request) => {
+  const uid = uidOf(request);
+  const userSnap = await db.doc(`users/${uid}`).get();
+  if (userSnap.get('onboardingComplete') !== true) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+  const photoId = textField(payload(request), 'photoId', 80);
+  if (!isProfilePhotoId(photoId) || photoId.startsWith('legacy-')) {
+    throw new HttpsError('invalid-argument', 'photoId');
+  }
+  const profileSnap = await db.doc(`profiles/${uid}`).get();
+  if (!profileSnap.exists) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+  let profile = profileShape(uid, profileSnap.data());
+  let photos = await loadGallery(uid, profile);
+  const path = `users/${uid}/photos/${photoId}`;
+  const pending: ProfilePhotoRecord = {
+    id: photoId,
+    storagePath: path,
+    status: 'pending',
+    reason: null,
+    publicUrl: null,
+  };
+  const withPending = upsertPhoto(photos, pending);
+  if (!withPending) throw new HttpsError('failed-precondition', 'photos');
+  photos = withPending;
+  await db.doc(`users/${uid}`).set({ profilePhotos: photos }, { merge: true });
+
+  const file = getStorage().bucket().file(path);
+  const [exists] = await file.exists();
+  if (!exists) throw new HttpsError('not-found', 'Photo upload was not found.');
+  const [metadata] = await file.getMetadata();
+  const size = Number(metadata.size ?? 0);
+  const contentType = String(metadata.contentType ?? '');
+  const issue = photoUploadIssue(contentType, size);
+  if (issue) {
+    const rejected: ProfilePhotoRecord = { ...pending, status: 'rejected', reason: issue };
+    photos = upsertPhoto(photos, rejected) ?? photos;
+    profile = await saveGallery(uid, photos, profile);
+    return { photo: rejected, editor: editorFrom(profile, photos, null) };
+  }
+  let buffer: Buffer;
+  try {
+    [buffer] = await file.download();
+  } catch {
+    throw new HttpsError('not-found', 'Photo upload was not found.');
+  }
+  let verdict;
+  try {
+    verdict = await moderateImage(GEMINI_API_KEY.value(), buffer, contentType);
+  } catch {
+    throw new HttpsError('failed-precondition', 'moderation-unavailable');
+  }
+  if (!verdict.allowed) {
+    await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: '' } }).catch(() => undefined);
+    const rejected: ProfilePhotoRecord = { ...pending, status: 'rejected', reason: verdict.reason || 'rejected' };
+    photos = upsertPhoto(photos, rejected) ?? photos;
+    profile = await saveGallery(uid, photos, profile);
+    return { photo: rejected, editor: editorFrom(profile, photos, null), status: 'rejected' as const };
+  }
+  const token = randomUUID();
+  await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
+  const encoded = encodeURIComponent(path);
+  const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${getStorage().bucket().name}/o/${encoded}?alt=media&token=${token}`;
+  const approved: ProfilePhotoRecord = { ...pending, status: 'approved', publicUrl };
+  photos = upsertPhoto(photos, approved) ?? photos;
+  profile = await saveGallery(uid, photos, profile);
+  return { photo: approved, editor: editorFrom(profile, photos, null), status: 'approved' as const };
+});
+
+export const reorderProfilePhotos = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const ids = asStringArray(payload(request).photoIds);
+  const profileSnap = await db.doc(`profiles/${uid}`).get();
+  if (!profileSnap.exists) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+  let profile = profileShape(uid, profileSnap.data());
+  const photos = await loadGallery(uid, profile);
+  const next = reorderPhotos(photos, ids);
+  if (!next) throw new HttpsError('invalid-argument', 'photoIds');
+  profile = await saveGallery(uid, next, profile);
+  return { editor: editorFrom(profile, next, null) };
+});
+
+export const deleteProfilePhoto = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const photoId = textField(payload(request), 'photoId', 80);
+  const profileSnap = await db.doc(`profiles/${uid}`).get();
+  if (!profileSnap.exists) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
+  let profile = profileShape(uid, profileSnap.data());
+  const photos = await loadGallery(uid, profile);
+  const next = removePhoto(photos, photoId);
+  if (!next) throw new HttpsError('not-found', 'Photo not found.');
+  const removed = photos.find((photo) => photo.id === photoId);
+  if (removed?.storagePath.startsWith(`users/${uid}/photos/`)) {
+    await getStorage().bucket().file(removed.storagePath).delete({ ignoreNotFound: true }).catch(() => undefined);
+  }
+  profile = await saveGallery(uid, next, profile);
+  return { editor: editorFrom(profile, next, null) };
+});
+
 export const deleteAccount = onCall(callable, async (request) => {
   const uid = uidOf(request);
   const chats = await db.collection('chats').where('participantIds', 'array-contains', uid).get();
@@ -693,6 +965,10 @@ export const deleteAccount = onCall(callable, async (request) => {
     ...reports.docs.map((item) => item.ref.update({ reporterId: DELETED })),
     ...purchases.docs.map((item) => item.ref.update({ userId: DELETED })),
   ]);
+  await getStorage()
+    .bucket()
+    .deleteFiles({ prefix: `users/${uid}/photos/` })
+    .catch(() => undefined);
   await authAdmin.deleteUser(uid).catch(() => undefined);
   return { ok: true };
 });

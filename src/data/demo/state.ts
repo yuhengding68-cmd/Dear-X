@@ -1,3 +1,4 @@
+import type { ProfileEditorDraft } from '../../domain/profileEdit';
 import type {
   Balance,
   Block,
@@ -38,6 +39,8 @@ export interface DemoState {
   payouts: Payout[];
   kycSessions: KycSession[];
   ageDenials: string[];
+  /** Owner-only edit state. Absent until the first profile edit. */
+  profileDrafts?: Record<string, ProfileEditorDraft>;
 }
 
 export const DEMO_DB_KEY = 'dearx.demo.db.v1';

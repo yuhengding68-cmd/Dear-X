@@ -29,10 +29,12 @@ import type { Creator, DatingProfile, KycStatus } from '../types';
 import { downloadJson } from '../lib/download';
 import { useI18n } from '../i18n';
 import { useApp } from '../state/AppProvider';
+import { profileSharePayload } from '../domain/profileEdit';
 import { OriginalButton, comingSoon } from '../components/ui';
+import { EditProfileModal } from './EditProfileModal';
 
 /** Original DearX ProfileView (source-code/App.tsx). Real profile fields come from the repository. */
-type ModalName = 'settings' | 'verification' | 'help' | null;
+type ModalName = 'settings' | 'verification' | 'help' | 'edit' | null;
 type StepStatus = 'completed' | 'pending';
 
 function maskPhone(phone: string | null): string {
@@ -376,11 +378,12 @@ function kycStep(status: KycStatus | undefined): StepStatus {
 
 export function ProfileScreen() {
   const { t } = useI18n();
-  const { repo, me, session, signOut } = useApp();
+  const { repo, me, session, signOut, setNotice } = useApp();
   const [profile, setProfile] = useState<DatingProfile | null>(null);
   const [creator, setCreator] = useState<Creator | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [modal, setModal] = useState<ModalName>(null);
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -397,7 +400,26 @@ export function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [repo]);
+  }, [repo, revision]);
+
+  const shareProfile = () => {
+    if (!profile) return;
+    const payload = profileSharePayload(profile, window.location.origin);
+    const copy = () => {
+      void navigator.clipboard.writeText(payload.url).then(
+        () => setNotice(t('profile.linkCopied')),
+        () => setNotice(payload.url),
+      );
+    };
+    if (typeof navigator.share !== 'function') {
+      copy();
+      return;
+    }
+    void navigator.share(payload).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      copy();
+    });
+  };
 
   if (!loaded) return null;
 
@@ -454,10 +476,10 @@ export function ProfileScreen() {
         </div>
 
         <div className="flex gap-3 w-full mb-8">
-          <OriginalButton variant="glass" className="flex-1 h-12 rounded-xl font-bold border-white/10 bg-white/5" onClick={comingSoon}>
+          <OriginalButton data-testid="edit-profile" variant="glass" className="flex-1 h-12 rounded-xl font-bold border-white/10 bg-white/5" onClick={() => setModal('edit')}>
             <PenTool className="w-4 h-4" /> {t('profile.edit')}
           </OriginalButton>
-          <OriginalButton variant="primary" className="flex-1 h-12 rounded-xl font-bold shadow-glow-vibe" onClick={comingSoon}>
+          <OriginalButton data-testid="share-profile" variant="primary" className="flex-1 h-12 rounded-xl font-bold shadow-glow-vibe" onClick={shareProfile}>
             <Share2 className="w-4 h-4" /> {t('profile.share')}
           </OriginalButton>
         </div>
@@ -530,6 +552,12 @@ export function ProfileScreen() {
         </div>
       </div>
 
+      {modal === 'edit' ? (
+        <EditProfileModal
+          onClose={() => setModal(null)}
+          onSaved={() => setRevision((value) => value + 1)}
+        />
+      ) : null}
       {modal === 'settings' ? <SettingsModal phone={session?.phone ?? me?.phone ?? null} onClose={() => setModal(null)} onSignOut={() => void signOut()} /> : null}
       {modal === 'verification' ? (
         <VerificationModal

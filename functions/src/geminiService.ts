@@ -1,6 +1,6 @@
 import { moderateWithKeywordStub, type ModerationVerdict } from './keywordModeration';
 
-export type ModerationContext = 'chat' | 'creator_post';
+export type ModerationContext = 'chat' | 'creator_post' | 'profile';
 
 /**
  * Server-side moderation. Keyword rejects return immediately.
@@ -44,6 +44,10 @@ export async function moderateText(apiKey: string, text: string, context: Modera
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   };
   const raw = payload.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  return readVerdict(raw);
+}
+
+function readVerdict(raw: string): ModerationVerdict {
   let parsed: Partial<ModerationVerdict>;
   try {
     parsed = JSON.parse(raw) as Partial<ModerationVerdict>;
@@ -58,4 +62,48 @@ export async function moderateText(apiKey: string, text: string, context: Modera
     categories: Array.isArray(parsed.categories) ? parsed.categories.map(String) : [],
     reason: typeof parsed.reason === 'string' ? parsed.reason : '',
   };
+}
+
+/**
+ * Image check for profile photos. Rejects nudity and sexual content.
+ * Missing key or an unreadable response throws — callers must not publish.
+ */
+export async function moderateImage(apiKey: string, bytes: Buffer, mimeType: string): Promise<ModerationVerdict> {
+  if (!apiKey.trim()) throw new Error('GEMINI_API_KEY is not configured.');
+  if (!bytes.length) throw new Error('Photo is empty.');
+  const prompt = [
+    'You moderate profile photos for DearX, a dating app for adults in Australia.',
+    'Return JSON only: {"allowed": boolean, "categories": string[], "reason": string}.',
+    'Reject nudity, sexual content, pornography, sexual acts, lingerie or underwear presented sexually, and any minor.',
+    'Allow ordinary clothed portraits, travel, food, pets, and group photos of adults.',
+    'If the file is not a photograph or you cannot tell, set allowed to false and categories to ["unreadable"].',
+  ].join('\n');
+  const response = await fetch(
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType, data: bytes.toString('base64') } },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`Gemini image moderation failed (${response.status}).`);
+  const payload = (await response.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const raw = payload.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  return readVerdict(raw);
 }
