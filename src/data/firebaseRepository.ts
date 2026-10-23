@@ -15,7 +15,6 @@ import {
   type User,
 } from 'firebase/auth';
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -58,11 +57,14 @@ import type {
   PrivateUser,
   Purchase,
   PurchaseInput,
+  MyReportStatus,
   Report,
   ReportInput,
   ReportStatus,
+  SupportTicket,
 } from '../types';
 import { firebaseErrorCode, mapFirebaseAuthCode, retryAfterSeconds } from '../domain/authErrors';
+import { isAccountBlocked, publishedSupportEmail, type ReportAction } from '../domain/safetyQueue';
 import { ensureAppCheck } from './appCheck';
 import { RepoError } from './errors';
 import { loadIosNativeAuth } from './nativeAuth';
@@ -90,11 +92,18 @@ function readEditor(profile: DatingProfile | null, userData: Record<string, unkn
 function asError(error: unknown, code: string): RepoError {
   if (error instanceof RepoError) return error;
   const message = error instanceof Error ? error.message : 'Request failed';
+  if (message.includes('account-blocked') || firebaseErrorCode(error).includes('account-blocked') || firebaseErrorCode(error).includes('user-disabled')) {
+    return new RepoError('account-blocked', 'account-blocked');
+  }
   return new RepoError(code, message.replace(/^Firebase:\s*/i, ''));
 }
 
 function authFailure(error: unknown): RepoError {
   if (error instanceof RepoError) return error;
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('account-blocked') || firebaseErrorCode(error).includes('user-disabled')) {
+    return new RepoError('account-blocked', 'account-blocked');
+  }
   const mapped = mapFirebaseAuthCode(firebaseErrorCode(error));
   if (mapped === 'too-many-requests') {
     return new RepoError('too-many-requests', String(retryAfterSeconds(error) ?? 30));
@@ -356,6 +365,8 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
     },
     async getDiscovery() {
       const uid = currentUid();
+      const meSnap = await getDoc(doc(db, 'users', uid));
+      if (isAccountBlocked(meSnap.data()?.accountStanding as 'active' | 'warned' | 'suspended' | 'banned' | undefined)) return [];
       const [profiles, blocks, passes, swipes, matches] = await Promise.all([
         getDocs(collection(db, 'profiles')),
         hiddenIds(uid),
@@ -444,18 +455,49 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
       }
     },
     async fileReport(input: ReportInput) {
-      const uid = currentUid();
-      const ref = await addDoc(collection(db, 'reports'), {
-        reporterId: uid,
-        targetUserId: input.targetUserId,
-        targetType: input.targetType,
-        targetId: input.targetId,
-        reason: input.reason,
-        details: input.details,
-        status: 'open',
-        createdAt: new Date().toISOString(),
-      });
-      return { id: ref.id, reporterId: uid, ...input, status: 'open', createdAt: new Date().toISOString() };
+      try {
+        const result = await call<ReportInput, { report: Report }>('fileReport')(input);
+        return result.data.report;
+      } catch (error) {
+        throw asError(error, 'report');
+      }
+    },
+    async listMyReports() {
+      try {
+        const result = await call<Record<string, never>, { reports: MyReportStatus[] }>('listMyReports')({});
+        return result.data.reports;
+      } catch (error) {
+        throw asError(error, 'report');
+      }
+    },
+    async createSupportTicket(subject, message) {
+      try {
+        const supportEmail = publishedSupportEmail(import.meta.env.VITE_SUPPORT_EMAIL);
+        const result = await call<{ subject: string; message: string; supportEmail: string }, { ticket: SupportTicket }>('createSupportTicket')({
+          subject,
+          message,
+          supportEmail,
+        });
+        return result.data.ticket;
+      } catch (error) {
+        throw asError(error, 'support');
+      }
+    },
+    async ensureAdminClaim() {
+      try {
+        const result = await call<Record<string, never>, { admin: boolean }>('refreshAdminClaim')({});
+        await auth.currentUser?.getIdToken(true);
+        return result.data.admin === true;
+      } catch (error) {
+        throw asError(error, 'forbidden');
+      }
+    },
+    async resolveReport(id, action: ReportAction, note) {
+      try {
+        await call<{ id: string; action: ReportAction; note: string }, { ok: boolean }>('resolveReport')({ id, action, note });
+      } catch (error) {
+        throw asError(error, 'forbidden');
+      }
     },
     async blockUser(userId) {
       try {
@@ -606,10 +648,12 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
       }
     },
     async listReportsForAdmin() {
-      const snap = await getDocs(collection(db, 'reports'));
-      return snap.docs
-        .map((item) => ({ id: item.id, ...(item.data() as Omit<Report, 'id'>) }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      try {
+        const result = await call<Record<string, never>, { reports: Report[] }>('listReportsForAdmin')({});
+        return result.data.reports;
+      } catch (error) {
+        throw asError(error, 'forbidden');
+      }
     },
     async reviewReport(id: string, status: ReportStatus, note: string) {
       try {

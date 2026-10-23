@@ -13,4 +13,6 @@ interface ImportMetaEnv {
   readonly VITE_FIREBASE_APPCHECK_PROVIDER?: string;
   /** Local debug token only. Never commit a real value. */
   readonly VITE_FIREBASE_APPCHECK_DEBUG_TOKEN?: string;
+  /** Public support address shown in Help. Not a secret. */
+  readonly VITE_SUPPORT_EMAIL?: string;
 }

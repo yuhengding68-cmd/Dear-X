@@ -8,14 +8,17 @@ import { creatorShareCents, planPurchase } from './commerce';
 import { applyLike } from './matching';
 import { moderateWithKeywordStub } from './moderation';
 import {
+  buildOnboardingPublication,
   profileSharePayload,
   projectPublicPhotos,
   settlePhotoModeration,
   sharePayloadLeaksPrivate,
   textFromProfile,
+  UNREVIEWED_PUBLIC_NAME,
 } from './profileEdit';
+import { adminClaimAllowed, isAccountBlocked, publishedSupportEmail, reportSla, requireAdminClaim, supportTicketInput } from './safetyQueue';
 import { normalizePhone } from './phone';
-import { addProfilePhoto, completeOnboarding, createPost, deleteAccount, deleteProfilePhoto, exportData, like, reorderProfilePhotos, sendMessage, submitProfileText, visibleCreators, visibleProfiles } from '../data/demo/logic';
+import { addProfilePhoto, completeOnboarding, createPost, createSupportTicket, deleteAccount, deleteProfilePhoto, exportData, fileReport, like, myReportStatuses, presentReport, reorderProfilePhotos, resolveReport, sendMessage, submitProfileText, visibleCreators, visibleProfiles } from '../data/demo/logic';
 import { createSeedState } from '../data/demo/seed';
 import type { Creator } from '../types';
 
@@ -35,6 +38,7 @@ assert.equal(mapFirebaseAuthCode('auth/too-many-requests'), 'too-many-requests')
 assert.equal(mapFirebaseAuthCode('functions/resource-exhausted'), 'too-many-requests');
 assert.equal(mapFirebaseAuthCode('auth/popup-closed-by-user'), 'cancelled');
 assert.equal(mapFirebaseAuthCode('auth/operation-not-allowed'), 'provider-disabled');
+assert.equal(mapFirebaseAuthCode('auth/user-disabled'), 'account-blocked');
 assert.equal(retryAfterSeconds(new Error('Wait 30 seconds')), 30);
 
 const firstSend = decidePhoneSignIn(EMPTY_PHONE_LIMIT, 1_000, PHONE_SIGN_IN_LIMITS);
@@ -85,8 +89,53 @@ const onboarded = completeOnboarding(
 );
 const publicProfile = onboarded.profiles.find((profile) => profile.uid === 'user-new');
 assert.ok(publicProfile);
+assert.equal(publicProfile.bio, 'Hello there');
+assert.equal(publicProfile.displayName, 'New Person');
 assert.equal(hasPrivateAccountField(publicProfile), false);
 assert.equal(onboarded.users.find((user) => user.uid === 'user-new')?.dateOfBirth, '2000-01-01');
+const sexual = completeOnboarding(
+  fresh,
+  'user-new',
+  {
+    dateOfBirth: '2000-01-01',
+    displayName: 'Risky Name',
+    gender: 'unspecified',
+    bio: 'send nudes',
+    city: 'Sydney',
+    interests: ['study'],
+    photoUrl: 'https://cdn.example/nudes.jpg',
+    acceptedTerms: true,
+    locale: 'en',
+  },
+  '2026-10-23T00:00:00.000Z',
+);
+const sexualPublic = sexual.profiles.find((profile) => profile.uid === 'user-new');
+assert.equal(sexualPublic?.displayName, UNREVIEWED_PUBLIC_NAME);
+assert.equal(sexualPublic?.bio, '');
+assert.equal(sexualPublic?.photoUrl ?? null, null);
+assert.equal(sexual.users.find((user) => user.uid === 'user-new')?.displayName, 'Risky Name');
+assert.equal(sexual.users.find((user) => user.uid === 'user-new')?.onboardingComplete, true);
+assert.equal(sexual.profileDrafts?.['user-new']?.textStatus, 'rejected');
+assert.equal(JSON.stringify(sexualPublic).includes('nudes'), false);
+const pendingPub = buildOnboardingPublication({
+  uid: 'user-pending',
+  age: 25,
+  gender: 'unspecified',
+  text: { displayName: 'Pending Person', bio: 'Hello there', interests: ['study'], city: 'Sydney', job: '' },
+  photoUrl: 'https://cdn.example/portrait.jpg',
+  textVerdict: 'pending',
+  textReason: 'moderation-unavailable',
+  textCategories: ['moderation_unavailable'],
+  photoVerdict: 'pending',
+  photoReason: 'moderation-unavailable',
+});
+assert.equal(pendingPub.profile.displayName, UNREVIEWED_PUBLIC_NAME);
+assert.equal(pendingPub.profile.bio, '');
+assert.equal(pendingPub.profile.photoUrl, null);
+assert.equal(pendingPub.draft.textStatus, 'pending');
+assert.equal(pendingPub.draft.textDraft?.displayName, 'Pending Person');
+assert.equal(pendingPub.draft.photos?.[0]?.publicUrl ?? null, null);
+assert.equal(JSON.stringify(pendingPub.profile).includes('portrait'), false);
 assert.throws(() =>
   completeOnboarding(
     fresh,
@@ -293,5 +342,69 @@ assert.equal(JSON.stringify(share).includes('2001-04-02'), false);
 
 const cleared = deleteAccount(blockedPhoto.state, 'user-alex');
 assert.equal(cleared.profileDrafts?.['user-alex'], undefined);
+
+assert.throws(() => resolveReport(seed, 'user-alex', 'report-seed-1', 'dismiss', '', '2026-10-23T10:00:00.000Z'));
+const dismissed = resolveReport(seed, 'user-sam', 'report-seed-1', 'dismiss', 'not a violation', '2026-10-23T10:00:00.000Z');
+assert.equal(dismissed.reports.find((report) => report.id === 'report-seed-1')?.status, 'dismissed');
+assert.equal(dismissed.reports.find((report) => report.id === 'report-seed-1')?.resolvedAt, '2026-10-23T10:00:00.000Z');
+assert.equal(dismissed.auditLog?.some((entry) => entry.action === 'dismiss' && entry.actorId === 'user-sam'), true);
+
+const warned = resolveReport(seed, 'user-sam', 'report-seed-1', 'warn', '', '2026-10-23T11:00:00.000Z');
+assert.equal(warned.users.find((user) => user.uid === 'user-lin')?.accountStanding, 'warned');
+assert.equal(warned.users.find((user) => user.uid === 'user-lin')?.warning?.reportId, 'report-seed-1');
+assert.equal(isAccountBlocked('warned'), false);
+assert.equal(warned.profiles.some((profile) => profile.uid === 'user-lin'), true);
+
+const filed = fileReport(
+  seed,
+  'user-mei',
+  { targetUserId: 'user-alex', targetType: 'message', targetId: 'msg-2', reason: 'spam', details: 'quote' },
+  '2026-10-23T08:00:00.000Z',
+);
+assert.equal(filed.report.snapshot?.messageText, 'Sunny. No need to rush meeting up.');
+const removedMessage = resolveReport(filed.state, 'user-sam', filed.report.id, 'remove', 'taken down', '2026-10-23T09:00:00.000Z');
+assert.equal(removedMessage.messages['chat_user-alex_user-mei'].find((message) => message.id === 'msg-2')?.text, '[removed]');
+assert.equal(removedMessage.messages['chat_user-alex_user-mei'].find((message) => message.id === 'msg-1')?.text.includes('Glad'), true);
+const statuses = myReportStatuses(filed.state, 'user-mei', Date.parse('2026-10-23T08:30:00.000Z'));
+const row = statuses.find((item) => item.id === filed.report.id);
+assert.ok(row);
+assert.equal('snapshot' in row, false);
+assert.equal('adminNote' in row, false);
+assert.equal(row.overdue, false);
+
+const banned = resolveReport(seed, 'user-sam', 'report-seed-1', 'ban', 'spam account', '2026-10-23T12:00:00.000Z');
+assert.equal(banned.profiles.some((profile) => profile.uid === 'user-lin'), false);
+assert.equal(visibleProfiles(banned, 'user-alex').some((profile) => profile.uid === 'user-lin'), false);
+assert.equal(isAccountBlocked(banned.users.find((user) => user.uid === 'user-lin')?.accountStanding), true);
+assert.throws(() => sendMessage(banned, 'user-lin', 'chat_user-alex_user-mei', 'hello there', '2026-10-23T12:01:00.000Z'));
+const restored = resolveReport(banned, 'user-sam', 'report-seed-1', 'restore', 'appeal', '2026-10-23T13:00:00.000Z');
+assert.equal(restored.users.find((user) => user.uid === 'user-lin')?.accountStanding, 'active');
+assert.equal(restored.profiles.some((profile) => profile.uid === 'user-lin'), true);
+assert.equal(restored.auditLog?.filter((entry) => entry.reportId === 'report-seed-1').map((entry) => entry.action).join(','), 'ban,restore');
+
+const shown = presentReport(seed, seed.reports[0]);
+assert.equal(shown.snapshot?.displayName, 'Lin Zhao');
+assert.equal(shown.snapshot?.city, 'Brisbane');
+assert.ok(shown.dueAt);
+
+assert.equal(reportSla('2026-10-18T00:00:00.000Z', 'open', Date.parse('2026-10-23T00:00:00.000Z')).overdue, true);
+assert.equal(reportSla('2026-10-23T00:00:00.000Z', 'open', Date.parse('2026-10-23T01:00:00.000Z')).overdue, false);
+assert.equal(reportSla('2026-10-18T00:00:00.000Z', 'dismissed', Date.parse('2026-10-23T00:00:00.000Z')).overdue, false);
+assert.equal(isAccountBlocked(undefined), false);
+assert.equal(isAccountBlocked('banned'), true);
+assert.throws(() => requireAdminClaim(false));
+assert.throws(() => requireAdminClaim(undefined));
+requireAdminClaim(true);
+assert.equal(adminClaimAllowed('admin'), true);
+assert.equal(adminClaimAllowed('user'), false);
+assert.equal(publishedSupportEmail(undefined), 'safety@dearx.app');
+assert.equal(publishedSupportEmail('not-an-email'), 'safety@dearx.app');
+assert.equal(publishedSupportEmail(' help@example.com '), 'help@example.com');
+assert.equal(supportTicketInput('H', 'x'), null);
+const ticket = createSupportTicket(seed, 'user-alex', 'help@example.com', 'Hi', 'Need a hand', '2026-10-23T11:00:00.000Z');
+assert.equal(ticket.ticket.supportEmail, 'help@example.com');
+assert.equal(ticket.ticket.status, 'open');
+assert.throws(() => createSupportTicket(seed, 'user-alex', 'help@example.com', 'H', 'x', '2026-10-23T11:00:00.000Z'));
+assert.throws(() => createSupportTicket(banned, 'user-lin', 'help@example.com', 'Hi', 'Need a hand', '2026-10-23T12:02:00.000Z'));
 
 console.log('domain tests passed');

@@ -25,11 +25,12 @@ import {
   X,
   Smartphone as PhoneIcon,
 } from 'lucide-react';
-import type { Creator, DatingProfile, KycStatus } from '../types';
+import type { Creator, DatingProfile, KycStatus, MyReportStatus } from '../types';
 import { downloadJson } from '../lib/download';
 import { useI18n } from '../i18n';
 import { useApp } from '../state/AppProvider';
 import { profileSharePayload } from '../domain/profileEdit';
+import { publishedSupportEmail } from '../domain/safetyQueue';
 import { OriginalButton, comingSoon } from '../components/ui';
 import { EditProfileModal } from './EditProfileModal';
 
@@ -327,6 +328,14 @@ function VerificationModal({
 
 function HelpModal({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
+  const { repo } = useApp();
+  const [subject, setSubject] = useState('');
+  const [message, setMessage] = useState('');
+  const [sent, setSent] = useState<{ id: string; email: string } | null>(null);
+  const [reports, setReports] = useState<MyReportStatus[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const email = publishedSupportEmail(import.meta.env.VITE_SUPPORT_EMAIL);
   const faqs = [
     { q: t('profile.faq1q'), a: t('profile.faq1a') },
     { q: t('profile.faq2q'), a: t('profile.faq2a') },
@@ -334,9 +343,35 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     { q: t('profile.faq4q'), a: t('profile.faq4a') },
   ];
 
+  useEffect(() => {
+    let cancelled = false;
+    void repo.listMyReports().then((rows) => {
+      if (!cancelled) setReports(rows);
+    }).catch(() => {
+      if (!cancelled) setReports([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [repo, sent]);
+
+  const submitTicket = () => {
+    setError(null);
+    setBusy(true);
+    void repo
+      .createSupportTicket(subject, message)
+      .then((ticket) => {
+        setSent({ id: ticket.id, email: ticket.supportEmail });
+        setSubject('');
+        setMessage('');
+      })
+      .catch(() => setError(t('profile.supportInvalid')))
+      .finally(() => setBusy(false));
+  };
+
   return (
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
-      <div className="w-full max-w-md glass-card rounded-3xl p-6 border border-white/20 shadow-2xl animate-slide-up relative max-h-[90vh] overflow-y-auto no-scrollbar">
+      <div data-testid="help-modal" className="w-full max-w-md glass-card rounded-3xl p-6 border border-white/20 shadow-2xl animate-slide-up relative max-h-[90vh] overflow-y-auto no-scrollbar">
         <button type="button" onClick={onClose} className="absolute top-4 right-4 text-white/50 hover:text-white">
           <X className="w-6 h-6" />
         </button>
@@ -363,9 +398,55 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         <div className="p-4 rounded-2xl bg-gradient-to-br from-brand-blue/20 to-brand-purple/20 border border-white/10 mb-4">
           <h3 className="font-bold text-white mb-1">{t('profile.stillHelp')}</h3>
           <p className="text-xs text-brand-subtext mb-3">{t('profile.supportBody')}</p>
-          <OriginalButton variant="primary" className="h-10 text-sm" onClick={comingSoon}>
-            {t('profile.contact')}
-          </OriginalButton>
+          <p className="mb-3 text-xs text-white/70" data-testid="support-email">
+            {email}
+          </p>
+          <form
+            data-testid="support-form"
+            className="space-y-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitTicket();
+            }}
+          >
+            <input
+              className="w-full glass-card rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-blue"
+              value={subject}
+              placeholder={t('profile.supportSubject')}
+              onChange={(event) => setSubject(event.target.value)}
+            />
+            <textarea
+              className="w-full glass-card rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand-blue"
+              value={message}
+              rows={3}
+              placeholder={t('profile.supportMessage')}
+              onChange={(event) => setMessage(event.target.value)}
+            />
+            <OriginalButton type="submit" variant="primary" className="h-10 text-sm" disabled={busy}>
+              {t('profile.contact')}
+            </OriginalButton>
+          </form>
+          {sent ? (
+            <p data-testid="support-sent" className="mt-3 text-xs text-emerald-200">
+              {t('profile.supportSent', { id: sent.id, email: sent.email })}
+            </p>
+          ) : null}
+          {error ? <p className="mt-2 text-xs text-red-300">{error}</p> : null}
+        </div>
+
+        <div data-testid="my-reports" className="space-y-2">
+          <h3 className="text-sm font-bold text-white">{t('profile.myReports')}</h3>
+          {reports.length === 0 ? <p className="text-xs text-brand-subtext">{t('profile.noReports')}</p> : null}
+          {reports.map((report) => (
+            <p key={report.id} className="text-xs text-brand-subtext">
+              {report.reason} · {t(`admin.status.${report.status}`)}
+              {report.overdue ? (
+                <span data-testid="my-report-sla" className="text-red-300">
+                  {` · ${t('profile.reportOverdue')}`}
+                </span>
+              ) : null}
+            </p>
+          ))}
         </div>
       </div>
     </div>
@@ -474,6 +555,11 @@ export function ProfileScreen() {
           <MapPin className="w-3 h-3" />
           <span>{place}</span>
         </div>
+        {me?.warning?.message ? (
+          <p data-testid="account-warning" className="mb-6 max-w-sm text-center text-xs text-amber-200">
+            {t('profile.warningBanner')}: {me.warning.message}
+          </p>
+        ) : null}
 
         <div className="flex gap-3 w-full mb-8">
           <OriginalButton data-testid="edit-profile" variant="glass" className="flex-1 h-12 rounded-xl font-bold border-white/10 bg-white/5" onClick={() => setModal('edit')}>

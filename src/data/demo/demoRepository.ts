@@ -2,6 +2,8 @@ import { denialKey } from '../../domain/age';
 import { decidePhoneSignIn, EMPTY_PHONE_LIMIT, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from '../../domain/phoneSignInLimit';
 import { createStubIapToken } from '../../domain/commerce';
 import type { NewProfilePhoto, ProfileTextInput } from '../../domain/profileEdit';
+import { isAccountBlocked, publishedSupportEmail } from '../../domain/safetyQueue';
+import type { ReportAction } from '../../domain/safetyQueue';
 import type {
   AuthProvider,
   AuthSession,
@@ -21,17 +23,21 @@ import {
   completeStubKyc,
   deleteProfilePhoto,
   createPost,
+  createSupportTicket,
   deleteAccount,
   exportData,
   fileReport,
   like,
+  myReportStatuses,
   pass,
   profileEditor,
+  presentReport,
   profileFor,
   reorderProfilePhotos,
   submitProfileText,
   purchase,
   requestPayout,
+  resolveReport,
   reviewPost,
   reviewReport,
   sendMessage,
@@ -107,6 +113,7 @@ export function createDemoRepository(): Repository {
   const signInExisting = (userId: string, provider: AuthProvider, placeholderAuth: boolean): AuthSession => {
     const user = state.users.find((item) => item.uid === userId);
     if (!user) throw new RepoError('not-found', 'Account not found.');
+    if (isAccountBlocked(user.accountStanding)) throw new RepoError('account-blocked', 'account-blocked');
     const next: AuthSession = {
       uid: user.uid,
       phone: user.phone,
@@ -340,10 +347,34 @@ export function createDemoRepository(): Repository {
       }
     },
     async fileReport(input: ReportInput) {
-      const result = fileReport(state, uid(), input, nowIso());
-      state = result.state;
-      persist();
-      return result.report;
+      try {
+        const result = fileReport(state, uid(), input, nowIso());
+        state = result.state;
+        persist();
+        return result.report;
+      } catch (error) {
+        throw new RepoError('report', error instanceof Error ? error.message : 'report');
+      }
+    },
+    async listMyReports() {
+      refresh();
+      return myReportStatuses(state, uid(), Date.now());
+    },
+    async createSupportTicket(subject: string, message: string) {
+      try {
+        const result = createSupportTicket(state, uid(), publishedSupportEmail(import.meta.env.VITE_SUPPORT_EMAIL), subject, message, nowIso());
+        state = result.state;
+        persist();
+        return result.ticket;
+      } catch (error) {
+        throw new RepoError('support', error instanceof Error ? error.message : 'support');
+      }
+    },
+    async ensureAdminClaim() {
+      refresh();
+      const me = state.users.find((user) => user.uid === uid());
+      if (me?.role !== 'admin') throw new RepoError('forbidden', 'Admin only.');
+      return true;
     },
     async blockUser(userId: string) {
       state = block(state, uid(), userId, nowIso());
@@ -452,7 +483,15 @@ export function createDemoRepository(): Repository {
       refresh();
       const me = state.users.find((user) => user.uid === uid());
       if (me?.role !== 'admin') throw new RepoError('forbidden', 'Admin only.');
-      return [...state.reports].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return state.reports.map((report) => presentReport(state, report)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    async resolveReport(id: string, action: ReportAction, note: string) {
+      try {
+        state = resolveReport(state, uid(), id, action, note, nowIso());
+      } catch (error) {
+        throw new RepoError('forbidden', error instanceof Error ? error.message : 'Update failed.');
+      }
+      persist();
     },
     async reviewReport(id: string, status: ReportStatus, note: string) {
       try {

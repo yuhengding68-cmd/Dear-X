@@ -5,9 +5,11 @@ import { FieldValue, getFirestore, type DocumentSnapshot, type Query } from 'fir
 import { getStorage } from 'firebase-admin/storage';
 import { defineSecret } from 'firebase-functions/params';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
+import { beforeUserSignedIn, HttpsError as BlockingError } from 'firebase-functions/v2/identity';
 import { ageOn, denialKey, isAtLeast18 } from './ageGate';
 import { decidePhoneSignIn, IP_SIGN_IN_LIMITS, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from './phoneSignInLimit';
 import { moderateImage, moderateText } from './geminiService';
+import { buildOnboardingPublication, safePublicHttps } from './onboardingPublish';
 import {
   isProfilePhotoId,
   keywordProfileText,
@@ -106,9 +108,127 @@ async function isDenied(uid: string, phone: string | null): Promise<boolean> {
   return snaps.some((snap) => snap.exists);
 }
 
-async function assertAdmin(uid: string): Promise<void> {
+async function assertAdmin(request: CallableRequest): Promise<string> {
+  const uid = uidOf(request);
+  if (request.auth?.token.admin !== true) throw new HttpsError('permission-denied', 'Admin only.');
   const snap = await db.doc(`users/${uid}`).get();
   if (snap.get('role') !== 'admin') throw new HttpsError('permission-denied', 'Admin only.');
+  return uid;
+}
+
+async function assertCanParticipate(uid: string): Promise<void> {
+  const snap = await db.doc(`users/${uid}`).get();
+  const standing = String(snap.get('accountStanding') ?? 'active');
+  if (standing === 'suspended' || standing === 'banned') {
+    throw new HttpsError('permission-denied', 'account-blocked');
+  }
+}
+
+const REPORT_SLA_MS = 24 * 60 * 60 * 1000;
+
+function reportDueAt(createdAt: string): string {
+  const start = Date.parse(createdAt);
+  return new Date((Number.isFinite(start) ? start : 0) + REPORT_SLA_MS).toISOString();
+}
+
+const SUPPORT_EMAIL_PATTERN = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
+const PLACEHOLDER_SUPPORT_EMAIL = 'safety@dearx.app';
+const REPORT_ACTIONS = ['dismiss', 'warn', 'remove', 'suspend', 'ban', 'restore'] as const;
+type ReportActionName = (typeof REPORT_ACTIONS)[number];
+
+/** Blocks sign-in while the private user document says suspended or banned. */
+export const gateSignIn = beforeUserSignedIn({ region: REGION }, async (event) => {
+  const uid = event.data?.uid;
+  if (!uid) return;
+  const user = await db.doc(`users/${uid}`).get();
+  const standing = String(user.get('accountStanding') ?? 'active');
+  if (standing === 'suspended' || standing === 'banned') {
+    throw new BlockingError('permission-denied', 'account-blocked');
+  }
+});
+
+function chooseSupportEmail(value: unknown): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (SUPPORT_EMAIL_PATTERN.test(trimmed)) return trimmed;
+  const fromEnv = (process.env.SUPPORT_EMAIL ?? '').trim();
+  if (SUPPORT_EMAIL_PATTERN.test(fromEnv)) return fromEnv;
+  return PLACEHOLDER_SUPPORT_EMAIL;
+}
+
+async function messageEvidence(targetUserId: string, messageId: string): Promise<{ text: string; path: string; chatId: string } | null> {
+  const chats = await db.collection('chats').where('participantIds', 'array-contains', targetUserId).limit(20).get();
+  for (const chat of chats.docs) {
+    const message = await chat.ref.collection('messages').doc(messageId).get();
+    if (!message.exists) continue;
+    return { text: String(message.get('text') ?? ''), path: message.ref.path, chatId: chat.id };
+  }
+  return null;
+}
+
+function snapshotFrom(data: Record<string, unknown> | undefined, messageText: string | null) {
+  return {
+    displayName: String(data?.displayName ?? ''),
+    bio: String(data?.bio ?? ''),
+    city: String(data?.city ?? ''),
+    photoUrl: typeof data?.photoUrl === 'string' ? data.photoUrl : null,
+    messageText,
+  };
+}
+
+async function reportSnapshot(targetUserId: string, targetType: string, targetId: string) {
+  const profile = await db.doc(`profiles/${targetUserId}`).get();
+  let data = profile.data() as Record<string, unknown> | undefined;
+  if (!data) {
+    const user = await db.doc(`users/${targetUserId}`).get();
+    const held = user.get('heldProfile');
+    if (held && typeof held === 'object') data = held as Record<string, unknown>;
+  }
+  const messageText = targetType === 'message' ? (await messageEvidence(targetUserId, targetId))?.text ?? null : null;
+  return snapshotFrom(data, messageText);
+}
+
+async function removeReportedContent(targetUserId: string, targetType: string, targetId: string): Promise<void> {
+  if (targetType === 'message') {
+    const found = await messageEvidence(targetUserId, targetId);
+    if (!found) return;
+    await db.doc(found.path).update({ text: '[removed]' });
+    const chat = await db.doc(`chats/${found.chatId}`).get();
+    if (chat.get('lastMessageText') === found.text) await chat.ref.update({ lastMessageText: '[removed]' });
+    return;
+  }
+  if (targetType === 'post') {
+    await db.doc(`creatorPosts/${targetId}`).set({ body: '[removed]', reviewStatus: 'rejected', reviewNote: 'removed' }, { merge: true });
+    return;
+  }
+  const user = await db.doc(`users/${targetUserId}`).get();
+  const photos = asPhotos(user.get('profilePhotos'));
+  if (photos) {
+    await db.doc(`users/${targetUserId}`).set(
+      { profilePhotos: photos.map((photo) => ({ ...photo, status: 'rejected' as const, publicUrl: null, reason: 'removed' })) },
+      { merge: true },
+    );
+  }
+  const profile = await db.doc(`profiles/${targetUserId}`).get();
+  if (profile.exists) await profile.ref.set({ bio: '', interests: [], photoUrl: null, photoUrls: [] }, { merge: true });
+}
+
+async function setStanding(uid: string, standing: 'suspended' | 'banned' | 'active'): Promise<void> {
+  const userRef = db.doc(`users/${uid}`);
+  if (standing === 'active') {
+    const user = await userRef.get();
+    const held = user.get('heldProfile');
+    if (held && typeof held === 'object') await db.doc(`profiles/${uid}`).set(held);
+    await userRef.set({ accountStanding: 'active', heldProfile: FieldValue.delete() }, { merge: true });
+    await authAdmin.updateUser(uid, { disabled: false }).catch(() => undefined);
+    return;
+  }
+  const profile = await db.doc(`profiles/${uid}`).get();
+  const patch: Record<string, unknown> = { accountStanding: standing };
+  if (profile.exists) patch.heldProfile = profile.data();
+  await userRef.set(patch, { merge: true });
+  if (profile.exists) await profile.ref.delete();
+  await authAdmin.updateUser(uid, { disabled: true }).catch(() => undefined);
+  await authAdmin.revokeRefreshTokens(uid).catch(() => undefined);
 }
 
 async function hidden(uid: string, other: string): Promise<boolean> {
@@ -187,7 +307,7 @@ export const rejectUnderage = onCall(callable, async (request) => {
   return { blocked: true };
 });
 
-export const completeOnboarding = onCall(callable, async (request) => {
+export const completeOnboarding = onCall(moderated, async (request) => {
   const uid = uidOf(request);
   const data = payload(request);
   const existing = await db.doc(`users/${uid}`).get();
@@ -205,43 +325,108 @@ export const completeOnboarding = onCall(callable, async (request) => {
   if (data.acceptedTerms !== true) throw new HttpsError('failed-precondition', 'Terms must be accepted.');
   const age = ageOn(dateOfBirth);
   if (age === null) throw new HttpsError('invalid-argument', 'Date of birth is invalid.');
-  const displayName = textField(data, 'displayName', 40);
-  const city = textField(data, 'city', 40);
-  const bio = textField(data, 'bio', 500);
   const gender = textField(data, 'gender', 20);
   if (!['woman', 'man', 'nonbinary', 'unspecified'].includes(gender)) {
     throw new HttpsError('invalid-argument', 'Gender is invalid.');
   }
-  const interests = Array.isArray(data.interests) ? data.interests.filter((item) => typeof item === 'string').slice(0, 8) : [];
+  const parsedText = normalizeProfileText({
+    displayName: typeof data.displayName === 'string' ? data.displayName : '',
+    bio: typeof data.bio === 'string' ? data.bio : '',
+    job: '',
+    city: typeof data.city === 'string' ? data.city : '',
+    interests: Array.isArray(data.interests) ? data.interests.filter((item) => typeof item === 'string') : [],
+  });
+  if (!parsedText.ok) throw new HttpsError('invalid-argument', parsedText.field);
   const locale = data.locale === 'zh-CN' ? 'zh-CN' : 'en';
   const now = new Date().toISOString();
-  const providerId = request.auth?.token.firebase?.sign_in_provider ?? 'phone';
-  const provider = providerId.includes('apple') ? 'apple' : providerId.includes('google') ? 'google' : 'phone';
-  const user = {
+  const keyword = keywordProfileText(parsedText.value);
+  let textStatus: 'approved' | 'rejected' | 'pending' = keyword.allowed ? 'approved' : 'rejected';
+  let textReason = keyword.reason;
+  let textCategories = keyword.categories;
+  if (keyword.allowed) {
+    try {
+      const labeled = [`Name: ${parsedText.value.displayName}`, `Bio: ${parsedText.value.bio}`, `Interests: ${parsedText.value.interests.join(', ')}`].join('\n');
+      const verdict = await moderateText(GEMINI_API_KEY.value(), labeled, 'profile');
+      textStatus = verdict.allowed ? 'approved' : 'rejected';
+      textReason = verdict.reason;
+      textCategories = verdict.categories;
+    } catch {
+      textStatus = 'pending';
+      textReason = 'moderation-unavailable';
+      textCategories = ['moderation_unavailable'];
+    }
+  }
+  const rawPhoto = data.photoUrl == null || data.photoUrl === '' ? null : cleanPhoto(data.photoUrl);
+  let photoStatus: 'none' | 'pending' | 'approved' | 'rejected' = rawPhoto ? 'pending' : 'none';
+  if (rawPhoto) {
+    if (!safePublicHttps(rawPhoto)) photoStatus = 'rejected';
+    else {
+      try {
+        const response = await fetch(rawPhoto, { redirect: 'manual', signal: AbortSignal.timeout(8000) });
+        if (response.status !== 200) photoStatus = 'pending';
+        else {
+          const type = (response.headers.get('content-type') ?? '').split(';')[0]!.trim();
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (photoUploadIssue(type, bytes.length)) photoStatus = 'rejected';
+          else {
+            try {
+              const verdict = await moderateImage(GEMINI_API_KEY.value(), bytes, type);
+              photoStatus = verdict.allowed ? 'approved' : 'rejected';
+            } catch {
+              photoStatus = 'pending';
+            }
+          }
+        }
+      } catch {
+        photoStatus = 'pending';
+      }
+    }
+  }
+  const published = buildOnboardingPublication({
     uid,
-    role: 'user',
-    phone: phoneOf(request),
-    provider,
-    dateOfBirth,
-    displayName,
-    createdAt: existing.get('createdAt') ?? now,
-    onboardingComplete: true,
-    locale,
-  };
-  const profile = {
-    uid,
-    displayName,
     age,
     gender,
-    bio,
-    city,
-    distanceKm: null,
-    interests,
-    photoUrl: cleanPhoto(data.photoUrl),
-  };
+    text: parsedText.value,
+    photoUrl: rawPhoto,
+    textStatus,
+    photoStatus,
+  });
+  const providerId = request.auth?.token.firebase?.sign_in_provider ?? 'phone';
+  const provider = providerId.includes('apple') ? 'apple' : providerId.includes('google') ? 'google' : 'phone';
+  const profile = published.profile;
   for (const key of PRIVATE_PROFILE_KEYS) {
     if (key in profile) throw new HttpsError('internal', 'Public profile cannot store private account fields.');
   }
+  const user = {
+    uid,
+    role: existing.get('role') === 'admin' ? 'admin' : 'user',
+    phone: phoneOf(request),
+    provider,
+    dateOfBirth,
+    displayName: parsedText.value.displayName,
+    createdAt: existing.get('createdAt') ?? now,
+    onboardingComplete: true,
+    locale,
+    accountStanding: 'active',
+    profileTextReview: {
+      status: textStatus,
+      reason: textStatus === 'approved' ? null : textReason,
+      categories: textCategories,
+      draft: textStatus === 'approved' ? null : { ...parsedText.value, job: '' },
+    },
+    ...(published.photos
+      ? {
+          profilePhotos: published.photos.map((photo) => ({
+            id: photo.id,
+            storagePath: photo.storagePath,
+            status: photo.status,
+            reason: photo.reason,
+            publicUrl: photo.publicUrl,
+            ownerUrl: photo.status === 'approved' ? null : rawPhoto,
+          })),
+        }
+      : {}),
+  };
   await db.doc(`users/${uid}`).set(user);
   await db.doc(`profiles/${uid}`).set(profile);
   return { user };
@@ -249,6 +434,7 @@ export const completeOnboarding = onCall(callable, async (request) => {
 
 export const likeUser = onCall(callable, async (request) => {
   const uid = uidOf(request);
+  await assertCanParticipate(uid);
   const toUserId = textField(payload(request), 'toUserId', 128);
   if (toUserId === uid) throw new HttpsError('invalid-argument', 'You cannot like your own profile.');
   if ((await hidden(uid, toUserId)) || (await hidden(toUserId, uid))) {
@@ -293,6 +479,7 @@ export const likeUser = onCall(callable, async (request) => {
 
 export const sendMessage = onCall(moderated, async (request) => {
   const uid = uidOf(request);
+  await assertCanParticipate(uid);
   const data = payload(request);
   const chatId = textField(data, 'chatId', 200);
   const text = textField(data, 'text', 2000);
@@ -589,27 +776,208 @@ export const requestPayout = onCall(callable, async (request) => {
   return { payout };
 });
 
-export const reviewReport = onCall(callable, async (request) => {
+export const refreshAdminClaim = onCall(callable, async (request) => {
   const uid = uidOf(request);
-  await assertAdmin(uid);
+  const snap = await db.doc(`users/${uid}`).get();
+  if (snap.get('role') !== 'admin') throw new HttpsError('permission-denied', 'Admin only.');
+  const record = await authAdmin.getUser(uid);
+  await authAdmin.setCustomUserClaims(uid, { ...(record.customClaims ?? {}), admin: true });
+  return { admin: true };
+});
+
+export const fileReport = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const data = payload(request);
+  const targetUserId = textField(data, 'targetUserId', 128);
+  const targetType = textField(data, 'targetType', 20);
+  if (!['user', 'message', 'creator', 'post'].includes(targetType)) {
+    throw new HttpsError('invalid-argument', 'targetType');
+  }
+  const targetId = textField(data, 'targetId', 200);
+  const reason = textField(data, 'reason', 80);
+  const details = optionalText(data, 'details', 2000);
+  const now = new Date().toISOString();
+  const id = `report_${randomUUID()}`;
+  const report = {
+    id,
+    reporterId: uid,
+    targetUserId,
+    targetType,
+    targetId,
+    reason,
+    details,
+    status: 'open',
+    createdAt: now,
+    updatedAt: now,
+    dueAt: reportDueAt(now),
+    snapshot: await reportSnapshot(targetUserId, targetType, targetId),
+  };
+  await db.doc(`reports/${id}`).set(report);
+  const auditId = `audit_${randomUUID()}`;
+  await db.doc(`moderationAudit/${auditId}`).set({
+    id: auditId,
+    reportId: id,
+    actorId: uid,
+    action: 'filed',
+    note: '',
+    targetUserId,
+    createdAt: now,
+  });
+  return { report };
+});
+
+export const listReportsForAdmin = onCall(callable, async (request) => {
+  await assertAdmin(request);
+  const snap = await db.collection('reports').orderBy('createdAt', 'desc').limit(100).get();
+  const reports = await Promise.all(
+    snap.docs.map(async (item) => {
+      const data = item.data();
+      const createdAt = String(data.createdAt ?? '');
+      const targetUserId = String(data.targetUserId ?? '');
+      const targetType = String(data.targetType ?? 'user');
+      const targetId = String(data.targetId ?? '');
+      const stored = data.snapshot;
+      const snapshot = stored && typeof stored === 'object' ? stored : await reportSnapshot(targetUserId, targetType, targetId);
+      return {
+        id: item.id,
+        reporterId: String(data.reporterId ?? ''),
+        targetUserId,
+        targetType,
+        targetId,
+        reason: String(data.reason ?? ''),
+        details: String(data.details ?? ''),
+        status: String(data.status ?? 'open'),
+        createdAt,
+        updatedAt: String(data.updatedAt ?? createdAt),
+        dueAt: typeof data.dueAt === 'string' ? data.dueAt : reportDueAt(createdAt),
+        resolvedAt: typeof data.resolvedAt === 'string' ? data.resolvedAt : undefined,
+        snapshot,
+      };
+    }),
+  );
+  return { reports };
+});
+
+export const listMyReports = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const snap = await db.collection('reports').where('reporterId', '==', uid).get();
+  const now = Date.now();
+  const reports = snap.docs
+    .map((item) => {
+      const data = item.data();
+      const createdAt = String(data.createdAt ?? '');
+      const status = String(data.status ?? 'open');
+      const dueAt = typeof data.dueAt === 'string' ? data.dueAt : reportDueAt(createdAt);
+      const open = status === 'open' || status === 'reviewing';
+      return {
+        id: item.id,
+        reason: String(data.reason ?? ''),
+        status,
+        createdAt,
+        updatedAt: String(data.updatedAt ?? createdAt),
+        dueAt,
+        overdue: open && Date.parse(dueAt) < now,
+      };
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return { reports };
+});
+
+export const createSupportTicket = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const data = payload(request);
+  const subject = textField(data, 'subject', 80);
+  const message = textField(data, 'message', 2000);
+  if (subject.length < 2 || message.length < 2) throw new HttpsError('invalid-argument', 'subject');
+  const now = new Date().toISOString();
+  const ticket = {
+    id: `ticket_${randomUUID()}`,
+    userId: uid,
+    supportEmail: chooseSupportEmail(data.supportEmail),
+    subject,
+    message,
+    status: 'open',
+    createdAt: now,
+  };
+  await db.doc(`supportTickets/${ticket.id}`).set(ticket);
+  return { ticket };
+});
+
+export const resolveReport = onCall(callable, async (request) => {
+  const actorId = await assertAdmin(request);
+  const data = payload(request);
+  const id = textField(data, 'id', 200);
+  const action = textField(data, 'action', 20);
+  if (!REPORT_ACTIONS.includes(action as ReportActionName)) throw new HttpsError('invalid-argument', 'Choose a review action.');
+  const note = optionalText(data, 'note', 500);
+  const ref = db.doc(`reports/${id}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Report not found.');
+  const targetUserId = String(snap.get('targetUserId') ?? '');
+  const targetType = String(snap.get('targetType') ?? 'user');
+  const targetId = String(snap.get('targetId') ?? '');
+  const chosen = action as ReportActionName;
+  const now = new Date().toISOString();
+  const status =
+    chosen === 'dismiss' ? 'dismissed' : chosen === 'warn' ? 'warned' : chosen === 'remove' ? 'removed' : chosen === 'suspend' ? 'suspended' : chosen === 'ban' ? 'banned' : 'resolved';
+  if (chosen === 'warn') {
+    await db.doc(`users/${targetUserId}`).set(
+      {
+        accountStanding: 'warned',
+        warning: { message: note || 'Please follow the community guidelines.', at: now, reportId: id },
+      },
+      { merge: true },
+    );
+  } else if (chosen === 'remove') {
+    await removeReportedContent(targetUserId, targetType, targetId);
+  } else if (chosen === 'suspend' || chosen === 'ban') {
+    await setStanding(targetUserId, chosen === 'suspend' ? 'suspended' : 'banned');
+  } else if (chosen === 'restore') {
+    await setStanding(targetUserId, 'active');
+  }
+  await ref.set(
+    {
+      status,
+      updatedAt: now,
+      resolvedAt: now,
+      dueAt: snap.get('dueAt') ?? reportDueAt(String(snap.get('createdAt') ?? now)),
+    },
+    { merge: true },
+  );
+  const auditId = `audit_${randomUUID()}`;
+  await db.doc(`moderationAudit/${auditId}`).set({
+    id: auditId,
+    reportId: id,
+    actorId,
+    action: chosen,
+    note,
+    targetUserId,
+    createdAt: now,
+  });
+  return { ok: true, status };
+});
+
+export const reviewReport = onCall(callable, async (request) => {
+  await assertAdmin(request);
   const data = payload(request);
   const id = textField(data, 'id', 200);
   const status = textField(data, 'status', 20);
   if (!['reviewing', 'resolved', 'dismissed'].includes(status)) {
     throw new HttpsError('invalid-argument', 'Choose a review status.');
   }
-  const note = optionalText(data, 'note', 500);
+  const now = new Date().toISOString();
   await db.doc(`reports/${id}`).update({
     status,
-    adminNote: note,
-    resolvedAt: new Date().toISOString(),
+    updatedAt: now,
+    resolvedAt: status === 'reviewing' ? null : now,
   });
   return { ok: true };
 });
 
 export const reviewCreatorPost = onCall(callable, async (request) => {
-  const uid = uidOf(request);
-  await assertAdmin(uid);
+  await assertAdmin(request);
   const data = payload(request);
   const id = textField(data, 'id', 200);
   const status = textField(data, 'status', 20);
@@ -762,6 +1130,7 @@ function editorFrom(profile: PublicProfileShape, photos: ProfilePhotoRecord[], r
 
 export const submitProfileText = onCall(moderated, async (request) => {
   const uid = uidOf(request);
+  await assertCanParticipate(uid);
   const userSnap = await db.doc(`users/${uid}`).get();
   if (userSnap.get('onboardingComplete') !== true) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
   const data = payload(request);
@@ -828,6 +1197,7 @@ export const submitProfileText = onCall(moderated, async (request) => {
 
 export const registerProfilePhoto = onCall(photoCallable, async (request) => {
   const uid = uidOf(request);
+  await assertCanParticipate(uid);
   const userSnap = await db.doc(`users/${uid}`).get();
   if (userSnap.get('onboardingComplete') !== true) throw new HttpsError('failed-precondition', 'Finish onboarding first.');
   const photoId = textField(payload(request), 'photoId', 80);

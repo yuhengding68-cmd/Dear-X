@@ -3,6 +3,7 @@ import { assertPrice, planPurchase } from '../../domain/commerce';
 import { applyLike, blockedSet, isBlockedPair } from '../../domain/matching';
 import { moderateWithKeywordStub } from '../../domain/moderation';
 import {
+  buildOnboardingPublication,
   isProfilePhotoId,
   legacyPhotos,
   moderateProfileText,
@@ -23,6 +24,7 @@ import {
   type ProfilePhotoRecord,
   type ProfileTextInput,
 } from '../../domain/profileEdit';
+import { isAccountBlocked, reportDueAt, reportSla, supportTicketInput, type ReportAction } from '../../domain/safetyQueue';
 import type {
   Balance,
   Block,
@@ -34,12 +36,16 @@ import type {
   DatingProfile,
   KycProviderName,
   Message,
+  ModerationAudit,
+  MyReportStatus,
   OnboardingInput,
   Pass,
   PostInput,
   PrivateUser,
   Report,
   ReportInput,
+  ReportSnapshot,
+  SupportTicket,
 } from '../../types';
 import type { DemoState } from './state';
 
@@ -55,7 +61,7 @@ export function visibleProfiles(state: DemoState, uid: string): DatingProfile[] 
       skip.add(match.userIds[0] === uid ? match.userIds[1] : match.userIds[0]);
     }
   }
-  const onboarded = new Set(state.users.filter((user) => user.onboardingComplete && user.role !== 'admin').map((user) => user.uid));
+  const onboarded = new Set(state.users.filter((user) => user.onboardingComplete && user.role !== 'admin' && !isAccountBlocked(user.accountStanding)).map((user) => user.uid));
   return state.profiles.filter((profile) => onboarded.has(profile.uid) && !skip.has(profile.uid) && !blocked.has(profile.uid));
 }
 
@@ -86,37 +92,49 @@ export function completeOnboarding(state: DemoState, uid: string, input: Onboard
   if (user.onboardingComplete) throw new Error('Onboarding is already complete.');
   if (!input.acceptedTerms) throw new Error('Terms must be accepted.');
   if (!isAtLeast18(input.dateOfBirth, new Date(now))) throw new Error('You must be 18 or older.');
-  const name = input.displayName.trim();
-  if (name.length < 2) throw new Error('Name is too short.');
-  if (!input.city.trim() || !input.bio.trim()) throw new Error('City and bio are required.');
+  const parsed = normalizeProfileText({
+    displayName: input.displayName,
+    bio: input.bio,
+    interests: input.interests,
+    city: input.city,
+    job: '',
+  });
+  if (!parsed.ok) throw new Error(parsed.field === 'name' ? 'Name is too short.' : 'City and bio are required.');
   const age = ageOn(input.dateOfBirth, new Date(now));
   if (age === null) throw new Error('Date of birth is invalid.');
+  const textCheck = moderateProfileText(parsed.value);
+  const photoUrl = input.photoUrl?.trim() || null;
+  const photoCheck = photoUrl ? photoContentVerdict(photoUrl) : null;
+  const published = buildOnboardingPublication({
+    uid,
+    age,
+    gender: input.gender,
+    text: parsed.value,
+    photoUrl,
+    textVerdict: textCheck.allowed ? 'approved' : 'rejected',
+    textReason: textCheck.allowed ? '' : textCheck.reason,
+    textCategories: textCheck.allowed ? [] : textCheck.categories,
+    photoVerdict: photoUrl ? (photoCheck?.allowed ? 'approved' : 'rejected') : 'none',
+    photoReason: photoCheck && !photoCheck.allowed ? photoCheck.reason : null,
+  });
   const nextUser: PrivateUser = {
     ...user,
     dateOfBirth: input.dateOfBirth,
-    displayName: name,
+    displayName: parsed.value.displayName,
     onboardingComplete: true,
     locale: input.locale,
-  };
-  const profile: DatingProfile = {
-    uid,
-    displayName: name,
-    age,
-    gender: input.gender,
-    bio: input.bio.trim(),
-    city: input.city,
-    distanceKm: null,
-    interests: input.interests,
-    photoUrl: input.photoUrl,
+    accountStanding: 'active',
   };
   return {
     ...state,
     users: state.users.map((item) => (item.uid === uid ? nextUser : item)),
-    profiles: [...state.profiles.filter((item) => item.uid !== uid), profile],
+    profiles: [...state.profiles.filter((item) => item.uid !== uid), published.profile],
+    profileDrafts: { ...draftMap(state), [uid]: published.draft },
   };
 }
 
 export function like(state: DemoState, fromUserId: string, toUserId: string, now: string) {
+  assertStanding(state, fromUserId);
   const result = applyLike(
     {
       likes: state.likes,
@@ -149,7 +167,31 @@ export function pass(state: DemoState, fromUserId: string, toUserId: string, now
   return { ...state, passes: [...state.passes, entry] };
 }
 
+function assertStanding(state: DemoState, uid: string): void {
+  const user = state.users.find((item) => item.uid === uid);
+  if (isAccountBlocked(user?.accountStanding)) throw new Error('account-blocked');
+}
+
+function snapshotFor(state: DemoState, input: ReportInput): ReportSnapshot {
+  const profile = profileFor(state, input.targetUserId);
+  let messageText: string | null = null;
+  if (input.targetType === 'message') {
+    for (const thread of Object.values(state.messages)) {
+      const found = thread.find((item) => item.id === input.targetId);
+      if (found) messageText = found.text;
+    }
+  }
+  return {
+    displayName: profile?.displayName ?? '',
+    bio: profile?.bio ?? '',
+    city: profile?.city ?? '',
+    photoUrl: profile?.photoUrl ?? null,
+    messageText,
+  };
+}
+
 export function sendMessage(state: DemoState, uid: string, chatId: string, text: string, now: string): { state: DemoState; message: Message } {
+  assertStanding(state, uid);
   const chat = state.chats.find((item) => item.id === chatId);
   if (!chat || !chat.participantIds.includes(uid)) throw new Error('Chat not found.');
   const other = chat.participantIds[0] === uid ? chat.participantIds[1] : chat.participantIds[0];
@@ -177,7 +219,25 @@ export function sendMessage(state: DemoState, uid: string, chatId: string, text:
   };
 }
 
+export function presentReport(state: DemoState, report: Report): Report {
+  return {
+    ...report,
+    dueAt: report.dueAt ?? reportDueAt(report.createdAt),
+    updatedAt: report.updatedAt ?? report.createdAt,
+    snapshot:
+      report.snapshot ??
+      snapshotFor(state, {
+        targetUserId: report.targetUserId,
+        targetType: report.targetType,
+        targetId: report.targetId,
+        reason: report.reason,
+        details: report.details,
+      }),
+  };
+}
+
 export function fileReport(state: DemoState, reporterId: string, input: ReportInput, now: string): { state: DemoState; report: Report } {
+  assertStanding(state, reporterId);
   if (!input.reason.trim()) throw new Error('A reason is required.');
   const report: Report = {
     id: `report_${now}_${state.reports.length + 1}`,
@@ -189,8 +249,20 @@ export function fileReport(state: DemoState, reporterId: string, input: ReportIn
     details: input.details.trim(),
     status: 'open',
     createdAt: now,
+    updatedAt: now,
+    dueAt: reportDueAt(now),
+    snapshot: snapshotFor(state, input),
   };
-  return { report, state: { ...state, reports: [...state.reports, report] } };
+  const audit: ModerationAudit = {
+    id: `audit_${report.id}_filed`,
+    reportId: report.id,
+    actorId: reporterId,
+    action: 'filed',
+    note: '',
+    targetUserId: input.targetUserId,
+    createdAt: now,
+  };
+  return { report, state: { ...state, reports: [...state.reports, report], auditLog: [...(state.auditLog ?? []), audit] } };
 }
 
 export function block(state: DemoState, blockerId: string, blockedId: string, now: string): DemoState {
@@ -530,16 +602,149 @@ export function deleteAccount(state: DemoState, uid: string): DemoState {
   };
 }
 
-export function reviewReport(state: DemoState, actorId: string, id: string, status: Report['status'], note: string, now: string): DemoState {
-  const actor = requireUser(state, actorId);
-  if (actor.role !== 'admin') throw new Error('Admin only.');
-  if (status === 'open') throw new Error('Choose a review status.');
+function holdProfile(state: DemoState, uid: string, standing: 'suspended' | 'banned'): DemoState {
+  const profile = profileFor(state, uid);
   return {
     ...state,
-    reports: state.reports.map((report) =>
-      report.id === id ? { ...report, status, adminNote: note, resolvedAt: status === 'reviewing' ? report.resolvedAt : now } : report,
+    profiles: state.profiles.filter((item) => item.uid !== uid),
+    users: state.users.map((user) =>
+      user.uid === uid ? { ...user, accountStanding: standing, heldProfile: profile ?? user.heldProfile ?? null } : user,
     ),
   };
+}
+
+function restoreProfile(state: DemoState, uid: string): DemoState {
+  const user = requireUser(state, uid);
+  const held = user.heldProfile ?? null;
+  return {
+    ...state,
+    users: state.users.map((item) => (item.uid === uid ? { ...item, accountStanding: 'active', heldProfile: null } : item)),
+    profiles: held ? [...state.profiles.filter((item) => item.uid !== uid), held] : state.profiles,
+  };
+}
+
+export function resolveReport(state: DemoState, actorId: string, id: string, action: ReportAction, note: string, now: string): DemoState {
+  const actor = requireUser(state, actorId);
+  if (actor.role !== 'admin') throw new Error('Admin only.');
+  const report = state.reports.find((item) => item.id === id);
+  if (!report) throw new Error('Report not found.');
+  const trimmed = note.trim();
+  let next = state;
+  let status: Report['status'] = report.status;
+  if (action === 'restore') {
+    next = restoreProfile(next, report.targetUserId);
+    status = 'resolved';
+  } else if (action === 'dismiss') {
+    status = 'dismissed';
+  } else if (action === 'warn') {
+    status = 'warned';
+    next = {
+      ...next,
+      users: next.users.map((user) =>
+        user.uid === report.targetUserId
+          ? { ...user, accountStanding: 'warned', warning: { message: trimmed || 'Please follow the community guidelines.', at: now, reportId: report.id } }
+          : user,
+      ),
+    };
+  } else if (action === 'remove') {
+    status = 'removed';
+    if (report.targetType === 'message') {
+      const messages = { ...next.messages };
+      for (const [chatId, thread] of Object.entries(messages)) {
+        messages[chatId] = thread.map((item) => (item.id === report.targetId ? { ...item, text: '[removed]' } : item));
+      }
+      next = {
+        ...next,
+        messages,
+        chats: next.chats.map((chat) => {
+          const thread = messages[chat.id] ?? [];
+          const last = thread[thread.length - 1];
+          return last ? { ...chat, lastMessageText: last.text } : chat;
+        }),
+      };
+    } else {
+      next = {
+        ...next,
+        profiles: next.profiles.map((profile) =>
+          profile.uid === report.targetUserId ? { ...profile, bio: '', interests: [], photoUrl: null, photoUrls: [] } : profile,
+        ),
+      };
+    }
+  } else if (action === 'suspend') {
+    status = 'suspended';
+    next = holdProfile(next, report.targetUserId, 'suspended');
+  } else if (action === 'ban') {
+    status = 'banned';
+    next = holdProfile(next, report.targetUserId, 'banned');
+  } else {
+    throw new Error('Choose a review action.');
+  }
+  const audit: ModerationAudit = {
+    id: `audit_${report.id}_${action}_${now}`,
+    reportId: report.id,
+    actorId,
+    action,
+    note: trimmed,
+    targetUserId: report.targetUserId,
+    createdAt: now,
+  };
+  return {
+    ...next,
+    reports: next.reports.map((item) =>
+      item.id === id
+        ? { ...item, status, adminNote: trimmed, updatedAt: now, resolvedAt: action === 'restore' ? item.resolvedAt : now, dueAt: item.dueAt ?? reportDueAt(item.createdAt) }
+        : item,
+    ),
+    auditLog: [...(next.auditLog ?? []), audit],
+  };
+}
+
+export function myReportStatuses(state: DemoState, uid: string, nowMs: number): MyReportStatus[] {
+  return state.reports
+    .filter((report) => report.reporterId === uid)
+    .map((report) => {
+      const sla = reportSla(report.createdAt, report.status, nowMs);
+      return {
+        id: report.id,
+        reason: report.reason,
+        status: report.status,
+        createdAt: report.createdAt,
+        updatedAt: report.updatedAt ?? report.createdAt,
+        dueAt: report.dueAt ?? reportDueAt(report.createdAt),
+        overdue: sla.overdue,
+      };
+    });
+}
+
+export function createSupportTicket(state: DemoState, uid: string, supportEmail: string, subject: string, message: string, now: string): { state: DemoState; ticket: SupportTicket } {
+  assertStanding(state, uid);
+  const parsed = supportTicketInput(subject, message);
+  if (!parsed) throw new Error('subject');
+  const ticket: SupportTicket = {
+    id: `ticket_${now}_${(state.supportTickets ?? []).length + 1}`,
+    userId: uid,
+    supportEmail,
+    subject: parsed.subject,
+    message: parsed.message,
+    status: 'open',
+    createdAt: now,
+  };
+  return { ticket, state: { ...state, supportTickets: [...(state.supportTickets ?? []), ticket] } };
+}
+
+export function reviewReport(state: DemoState, actorId: string, id: string, status: Report['status'], note: string, now: string): DemoState {
+  if (status === 'dismissed') return resolveReport(state, actorId, id, 'dismiss', note, now);
+  if (status === 'resolved' || status === 'reviewing') {
+    const actor = requireUser(state, actorId);
+    if (actor.role !== 'admin') throw new Error('Admin only.');
+    return {
+      ...state,
+      reports: state.reports.map((report) =>
+        report.id === id ? { ...report, status, adminNote: note, updatedAt: now, resolvedAt: status === 'reviewing' ? report.resolvedAt : now } : report,
+      ),
+    };
+  }
+  throw new Error('Choose a review status.');
 }
 
 export function reviewPost(state: DemoState, actorId: string, id: string, status: 'approved' | 'rejected', note: string): DemoState {

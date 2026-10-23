@@ -11,11 +11,13 @@ import type {
   Like,
   Match,
   Message,
+  ModerationAudit,
   Pass,
   Payout,
   PrivateUser,
   Purchase,
   Report,
+  SupportTicket,
 } from '../../types';
 
 export type { DatingProfile, PrivateUser, Creator, CreatorPost, Report, Message };
@@ -41,6 +43,8 @@ export interface DemoState {
   ageDenials: string[];
   /** Owner-only edit state. Absent until the first profile edit. */
   profileDrafts?: Record<string, ProfileEditorDraft>;
+  auditLog?: ModerationAudit[];
+  supportTickets?: SupportTicket[];
 }
 
 export const DEMO_DB_KEY = 'dearx.demo.db.v1';

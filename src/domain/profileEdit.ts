@@ -221,6 +221,68 @@ export function sharePayloadLeaksPrivate(payload: { title: string; text: string;
   return /dateOfBirth|\bphone\b|\bemail\b|\+\d{6,}|provider|role/i.test(blob);
 }
 
+export const UNREVIEWED_PUBLIC_NAME = 'Member';
+
+export type OnboardingVerdict = 'approved' | 'rejected' | 'pending';
+
+/**
+ * Public onboarding profile. Unreviewed text and photos stay off the public
+ * document until a verdict is approved. Pending and rejected both withhold.
+ */
+export function buildOnboardingPublication(input: {
+  uid: string;
+  age: number;
+  gender: DatingProfile['gender'];
+  text: ProfileTextInput;
+  photoUrl: string | null;
+  textVerdict: OnboardingVerdict;
+  textReason: string;
+  textCategories: string[];
+  photoVerdict: OnboardingVerdict | 'none';
+  photoReason: string | null;
+}): {
+  profile: DatingProfile;
+  draft: ProfileEditorDraft;
+} {
+  const textApproved = input.textVerdict === 'approved';
+  const photoApproved = input.photoVerdict === 'approved' && Boolean(input.photoUrl);
+  const profile: DatingProfile = {
+    uid: input.uid,
+    displayName: textApproved ? input.text.displayName : UNREVIEWED_PUBLIC_NAME,
+    age: input.age,
+    gender: input.gender,
+    bio: textApproved ? input.text.bio : '',
+    city: input.text.city,
+    distanceKm: null,
+    interests: textApproved ? [...input.text.interests] : [],
+    photoUrl: photoApproved ? input.photoUrl : null,
+  };
+  if (photoApproved && input.photoUrl) profile.photoUrls = [input.photoUrl];
+  const photos: ProfilePhotoRecord[] | null = input.photoVerdict === 'none' || !input.photoUrl
+    ? null
+    : [
+        {
+          id: 'onboarding-photo',
+          storagePath: '',
+          status: input.photoVerdict === 'approved' ? 'approved' : input.photoVerdict === 'rejected' ? 'rejected' : 'pending',
+          reason: input.photoVerdict === 'approved' ? null : input.photoReason,
+          publicUrl: photoApproved ? input.photoUrl : null,
+          ownerUrl: input.photoUrl,
+        },
+      ];
+  if (photos && photoApproved) profile.photoUrl = input.photoUrl;
+  return {
+    profile,
+    draft: {
+      photos,
+      textStatus: input.textVerdict,
+      textReason: textApproved ? null : input.textReason || null,
+      textCategories: textApproved ? [] : input.textCategories,
+      textDraft: textApproved ? null : input.text,
+    },
+  };
+}
+
 export function textFromProfile(profile: DatingProfile): ProfileTextInput {
   return {
     displayName: profile.displayName,

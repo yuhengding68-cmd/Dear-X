@@ -3,7 +3,8 @@ export type DataMode = 'demo' | 'firebase';
 export type UserRole = 'user' | 'admin';
 export type Gender = 'woman' | 'man' | 'nonbinary' | 'unspecified';
 export type AuthProvider = 'phone' | 'apple' | 'google';
-export type ReportStatus = 'open' | 'reviewing' | 'resolved' | 'dismissed';
+export type ReportStatus = 'open' | 'reviewing' | 'resolved' | 'dismissed' | 'warned' | 'removed' | 'suspended' | 'banned';
+export type AccountStanding = 'active' | 'warned' | 'suspended' | 'banned';
 export type ReportTargetType = 'user' | 'message' | 'creator' | 'post';
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 export type KycStatus = 'none' | 'pending' | 'verified' | 'rejected';
@@ -32,6 +33,11 @@ export interface PrivateUser {
   createdAt: string;
   onboardingComplete: boolean;
   locale: Locale;
+  /** Server-owned. Suspended and banned accounts cannot sign in, discover, or chat. */
+  accountStanding?: AccountStanding;
+  warning?: { message: string; at: string; reportId: string } | null;
+  /** Public profile held while the account is suspended or banned. */
+  heldProfile?: DatingProfile | null;
 }
 
 export interface DatingProfile {
@@ -101,8 +107,50 @@ export interface Report {
   details: string;
   status: ReportStatus;
   createdAt: string;
+  updatedAt?: string;
+  dueAt?: string;
   resolvedAt?: string;
   adminNote?: string;
+  /** Captured when the report is filed, so later edits do not erase evidence. */
+  snapshot?: ReportSnapshot;
+}
+
+export interface ReportSnapshot {
+  displayName: string;
+  bio: string;
+  city: string;
+  photoUrl: string | null;
+  messageText: string | null;
+}
+
+export interface ModerationAudit {
+  id: string;
+  reportId: string;
+  actorId: string;
+  action: string;
+  note: string;
+  targetUserId: string;
+  createdAt: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  userId: string;
+  supportEmail: string;
+  subject: string;
+  message: string;
+  status: 'open';
+  createdAt: string;
+}
+
+export interface MyReportStatus {
+  id: string;
+  reason: string;
+  status: ReportStatus;
+  createdAt: string;
+  updatedAt: string;
+  dueAt: string;
+  overdue: boolean;
 }
 
 export interface Block {

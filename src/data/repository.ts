@@ -1,4 +1,5 @@
 import type { NewProfilePhoto, ProfileEditResult, ProfileEditor, ProfileTextInput } from '../domain/profileEdit';
+import type { ReportAction } from '../domain/safetyQueue';
 import type {
   AuthSession,
   Balance,
@@ -18,9 +19,11 @@ import type {
   PrivateUser,
   Purchase,
   PurchaseInput,
+  MyReportStatus,
   Report,
   ReportInput,
   ReportStatus,
+  SupportTicket,
 } from '../types';
 
 export interface PhoneStart {
@@ -73,6 +76,12 @@ export interface Repository {
   getMessages(chatId: string): Promise<Message[]>;
   sendMessage(chatId: string, text: string): Promise<Message>;
   fileReport(input: ReportInput): Promise<Report>;
+  /** Status the reporter is allowed to see. No admin notes or private evidence. */
+  listMyReports(): Promise<MyReportStatus[]>;
+  createSupportTicket(subject: string, message: string): Promise<SupportTicket>;
+  /** Copies the server role onto a custom claim. Demo mode checks the server role only. */
+  ensureAdminClaim(): Promise<boolean>;
+  resolveReport(id: string, action: ReportAction, note: string): Promise<void>;
   blockUser(userId: string): Promise<void>;
   unblockUser(userId: string): Promise<void>;
   listBlocks(): Promise<Array<{ block: Block; profile: DatingProfile | null }>>;

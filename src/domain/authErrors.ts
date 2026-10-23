@@ -18,6 +18,7 @@ export type AuthErrorCode =
   | 'native-auth'
   | 'auth-unavailable'
   | 'underage'
+  | 'account-blocked'
   | 'internal';
 
 export function firebaseErrorCode(error: unknown): string {
@@ -79,6 +80,9 @@ export function mapFirebaseAuthCode(code: string): AuthErrorCode {
     case 'app-not-authorized':
     case 'invalid-api-key':
       return 'app-not-authorized';
+    case 'user-disabled':
+    case 'account-blocked':
+      return 'account-blocked';
     default:
       return 'internal';
   }

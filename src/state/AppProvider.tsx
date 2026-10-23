@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { isAccountBlocked } from '../domain/safetyQueue';
 import type { Repository } from '../data/repository';
 import type { AuthSession, PrivateUser } from '../types';
 
@@ -79,6 +80,16 @@ export function AppProvider({ repo, children }: { repo: Repository; children: Re
         }
         const user = await repo.getMe();
         if (cancelled) return;
+        if (user && isAccountBlocked(user.accountStanding)) {
+          try {
+            sessionStorage.setItem('dearx.authError', 'account-blocked');
+          } catch {
+            /* The login screen reads this when storage is available. */
+          }
+          await repo.signOut();
+          if (!cancelled) setStack([{ name: 'auth' }]);
+          return;
+        }
         setSession(existing);
         setMe(user);
         setStack(user?.onboardingComplete ? signedInHome() : [{ name: 'onboarding' }]);
@@ -121,6 +132,18 @@ export function AppProvider({ repo, children }: { repo: Repository; children: Re
           return;
         }
         const user = await repo.getMe();
+        if (user && isAccountBlocked(user.accountStanding)) {
+          try {
+            sessionStorage.setItem('dearx.authError', 'account-blocked');
+          } catch {
+            /* The login screen reads this when storage is available. */
+          }
+          await repo.signOut();
+          setSession(null);
+          setMe(null);
+          setStack([{ name: 'auth' }]);
+          return;
+        }
         setSession(next);
         setMe(user);
         setStack(user?.onboardingComplete ? signedInHome() : [{ name: 'onboarding' }]);

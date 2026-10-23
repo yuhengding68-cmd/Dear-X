@@ -69,10 +69,14 @@ export function EditProfileModal({ onClose, onSaved }: { onClose: () => void; on
     void repo.getProfileEditor().then((next) => {
       if (cancelled) return;
       setEditor(next);
-      const source = next.textStatus === 'rejected' && next.textDraft ? next.textDraft : next.profile ? textFromProfile(next.profile) : null;
+      const withheld = (next.textStatus === 'rejected' || next.textStatus === 'pending') && next.textDraft ? next.textDraft : null;
+      const source = withheld ?? (next.profile ? textFromProfile(next.profile) : null);
       setForm(source);
       if (next.textStatus === 'rejected' && next.textReason) {
         setError(moderationMessage(next.textCategories, next.textReason, t));
+        setUnchanged(true);
+      } else if (next.textStatus === 'pending') {
+        setError(t('profile.pendingReview'));
         setUnchanged(true);
       }
     });
