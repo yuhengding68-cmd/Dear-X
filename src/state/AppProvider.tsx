@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { Repository } from '../data/repository';
 import type { AuthSession, PrivateUser } from '../types';
 
-export type Tab = 'discover' | 'matches' | 'chats' | 'creators' | 'safety' | 'profile';
+export type Tab = 'discover' | 'compass' | 'matches' | 'chats' | 'creators' | 'safety' | 'profile';
 
 export type Route =
   | { name: 'landing' }
