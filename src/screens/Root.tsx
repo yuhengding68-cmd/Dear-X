@@ -47,8 +47,9 @@ export function Root() {
     return <AuthScreen />;
   }
 
-  if (app.route.name === 'main' && app.session) {
-    const tab = app.route.tab;
+  if (app.session && (app.route.name === 'main' || app.route.name === 'chat')) {
+    const isChat = app.route.name === 'chat';
+    const tab = app.route.name === 'main' ? app.route.tab : 'chats';
     // Original DearX shell: same header and 5 bottom tabs, same order. Unbuilt features show "Coming soon".
     const navItems: { key: string; active: boolean; onClick: () => void; color: string; dot: string; icon: ReactNode }[] = [
       { key: 'swipe', active: tab === 'discover', onClick: () => app.go({ name: 'main', tab: 'discover' }), color: 'text-brand-blue bg-brand-blue/10', dot: 'bg-brand-blue', icon: <div className="w-6 h-6 flex items-center justify-center"><LogoX className="w-5 h-5" /></div> },
@@ -63,7 +64,7 @@ export function Root() {
           <div className="absolute top-[-20%] left-[-20%] w-[80vw] h-[80vw] bg-brand-blue/30 rounded-full blur-[100px] animate-pulse"></div>
           <div className="absolute bottom-[-20%] right-[-20%] w-[80vw] h-[80vw] bg-brand-purple/30 rounded-full blur-[100px] animate-pulse" style={{ animationDelay: '2s' }}></div>
         </div>
-        <header className="fixed top-0 left-0 right-0 h-16 glass-nav z-50 flex items-center justify-between px-4">
+        {isChat ? null : <header className="fixed top-0 left-0 right-0 h-16 glass-nav z-50 flex items-center justify-between px-4">
           <div className="flex flex-col items-center justify-center leading-none select-none cursor-pointer" onClick={() => app.go({ name: 'main', tab: 'discover' })}>
             <span className="text-[10px] font-black tracking-[0.25em] text-white">DEAR</span>
             <span className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-br from-brand-blue to-brand-purple -mt-1">X</span>
@@ -84,34 +85,37 @@ export function Root() {
               <Bell className="w-5 h-5 text-white" />
             </button>
           </div>
-        </header>
-        <main className="flex-1 flex flex-col relative z-10 overflow-hidden pt-16 pb-24">
+        </header>}
+        <main className={`flex-1 flex flex-col relative z-10 overflow-hidden ${isChat ? '' : 'pt-16 pb-24'}`}>
           {app.notice ? <p className="px-4 pt-3 text-sm text-emerald-200">{app.notice}</p> : null}
           {app.error ? <p className="px-4 pt-3 text-sm text-red-300">{app.error}</p> : null}
-          <div className={tab === 'discover' || tab === 'profile' ? 'flex-1 relative min-h-0' : 'flex-1 overflow-y-auto'}>
-            {tab === 'discover' ? <DiscoverScreen /> : null}
-            {tab === 'matches' ? <MatchesScreen /> : null}
-            {tab === 'chats' ? <ChatListScreen /> : null}
-            {tab === 'creators' ? <CreatorListScreen /> : null}
-            {tab === 'safety' ? <SafetyScreen /> : null}
-            {tab === 'profile' ? <ProfileScreen /> : null}
+          <div className={isChat || tab === 'discover' || tab === 'profile' || tab === 'chats' ? 'flex-1 relative min-h-0' : 'flex-1 overflow-y-auto'}>
+            {app.route.name === 'chat' ? <ChatThreadScreen chatId={app.route.chatId} /> : null}
+            {!isChat && tab === 'discover' ? <DiscoverScreen /> : null}
+            {!isChat && tab === 'matches' ? <MatchesScreen /> : null}
+            {!isChat && tab === 'chats' ? <ChatListScreen /> : null}
+            {!isChat && tab === 'creators' ? <CreatorListScreen /> : null}
+            {!isChat && tab === 'safety' ? <SafetyScreen /> : null}
+            {!isChat && tab === 'profile' ? <ProfileScreen /> : null}
           </div>
         </main>
-        <nav className="fixed bottom-0 left-0 right-0 h-20 glass-nav border-t border-white/5 flex items-center justify-around px-2 z-50 pb-2">
-          {navItems.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={item.onClick}
-              className={`p-3 rounded-2xl transition-all ${item.active ? item.color : 'text-brand-subtext hover:text-white'}`}
-            >
-              <div className="relative">
-                {item.icon}
-                {item.active && <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${item.dot}`}></div>}
-              </div>
-            </button>
-          ))}
-        </nav>
+        {isChat ? null : (
+          <nav className="fixed bottom-0 left-0 right-0 h-20 glass-nav border-t border-white/5 flex items-center justify-around px-2 z-50 pb-2">
+            {navItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={item.onClick}
+                className={`p-3 rounded-2xl transition-all ${item.active ? item.color : 'text-brand-subtext hover:text-white'}`}
+              >
+                <div className="relative">
+                  {item.icon}
+                  {item.active && <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${item.dot}`}></div>}
+                </div>
+              </button>
+            ))}
+          </nav>
+        )}
         <ComingSoonToast />
       </div>
     );
