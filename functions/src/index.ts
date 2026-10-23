@@ -5,8 +5,8 @@ import { defineSecret } from 'firebase-functions/params';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { ageOn, denialKey, isAtLeast18 } from './ageGate';
 import { moderateText } from './geminiService';
-import { StubIapVerifier, mintStubReceipt } from './iap';
-import { createKycVendor, stubKycCompletionAllowed } from './kycVendor';
+import { LiveIapVerifier, StubIapVerifier, iapStubMode, mintStubReceipt, type IapReceipt } from './iap';
+import { createKycVendor, stubKycCompletionAllowed, stubsAllowed } from './kycVendor';
 import { createPayoutProvider } from './payoutProvider';
 
 initializeApp();
@@ -401,8 +401,22 @@ export const verifyPurchase = onCall(callable, async (request) => {
   const entitlementId = `${uid}_${kind}_${productId}`;
   const existing = await db.doc(`entitlements/${entitlementId}`).get();
   if (existing.exists) throw new HttpsError('already-exists', 'Already purchased.');
-  const receipt = mintStubReceipt(platform, productId);
-  const verified = await new StubIapVerifier().verify(receipt);
+  // The client must send the store receipt. The server never mints one in live mode.
+  let verified: { transactionId: string };
+  try {
+    if (iapStubMode(stubsAllowed())) {
+      verified = await new StubIapVerifier().verify(mintStubReceipt(platform, productId));
+    } else {
+      const token = typeof data.receipt === 'string' ? data.receipt : '';
+      if (!token) throw new Error('A store receipt is required.');
+      const receipt: IapReceipt = { platform, productId, token };
+      verified = await new LiveIapVerifier().verify(receipt);
+    }
+  } catch (error) {
+    throw new HttpsError('failed-precondition', error instanceof Error ? error.message : 'Purchase could not be verified.');
+  }
+  const dupe = await db.collection('purchases').where('providerTransactionId', '==', verified.transactionId).limit(1).get();
+  if (!dupe.empty) throw new HttpsError('already-exists', 'This receipt was already used.');
   const now = new Date().toISOString();
   const purchase = {
     id: `purchase_${verified.transactionId}`,
@@ -451,10 +465,48 @@ export const requestPayout = onCall(callable, async (request) => {
     throw new HttpsError('failed-precondition', 'Payouts require a verified identity check.');
   }
   const provider = createPayoutProvider();
-  const transfer = await provider.createTransfer({ creatorId: uid, amountCents, currency: 'AUD' });
   const now = new Date().toISOString();
+  const payoutId = `payout_${crypto.randomUUID()}`;
+  const payoutRef = db.doc(`payouts/${payoutId}`);
+  const balanceRef = db.doc(`balances/${uid}`);
+  // 1. Deduct and lock the amount before any money moves.
+  await db.runTransaction(async (tx) => {
+    const balance = await tx.get(balanceRef);
+    const available = Number(balance.get('availableCents') ?? 0);
+    if (available < amountCents) throw new HttpsError('failed-precondition', 'Balance is too low.');
+    tx.update(balanceRef, {
+      availableCents: available - amountCents,
+      lockedCents: FieldValue.increment(amountCents),
+    });
+    tx.set(payoutRef, {
+      id: payoutId,
+      creatorId: uid,
+      amountCents,
+      currency: 'AUD',
+      provider: provider.name,
+      providerTransferId: null,
+      status: 'locked',
+      createdAt: now,
+    });
+  });
+  // 2. Call the provider. On failure, release the lock back to available.
+  let transfer: { transferId: string; status: 'pending' };
+  try {
+    transfer = await provider.createTransfer({ creatorId: uid, amountCents, currency: 'AUD' });
+  } catch (error) {
+    await db.runTransaction(async (tx) => {
+      tx.update(balanceRef, {
+        availableCents: FieldValue.increment(amountCents),
+        lockedCents: FieldValue.increment(-amountCents),
+      });
+      tx.update(payoutRef, { status: 'failed' });
+    });
+    throw new HttpsError('unavailable', error instanceof Error ? error.message : 'Payout failed.');
+  }
+  // Locked funds stay locked until the provider webhook confirms (TODO: webhook handler).
+  await payoutRef.update({ providerTransferId: transfer.transferId, status: transfer.status });
   const payout = {
-    id: `payout_${crypto.randomUUID()}`,
+    id: payoutId,
     creatorId: uid,
     amountCents,
     currency: 'AUD' as const,
@@ -463,14 +515,6 @@ export const requestPayout = onCall(callable, async (request) => {
     status: transfer.status,
     createdAt: now,
   };
-  await db.runTransaction(async (tx) => {
-    const balanceRef = db.doc(`balances/${uid}`);
-    const balance = await tx.get(balanceRef);
-    const available = Number(balance.get('availableCents') ?? 0);
-    if (available < amountCents) throw new HttpsError('failed-precondition', 'Balance is too low.');
-    tx.update(balanceRef, { availableCents: available - amountCents });
-    tx.set(db.doc(`payouts/${payout.id}`), payout);
-  });
   return { payout };
 });
 

@@ -25,6 +25,26 @@ export class StubIapVerifier implements IapVerifier {
   }
 }
 
+/**
+ * Real verification is not implemented yet.
+ * TODO(App Store): verify a StoreKit 2 signed transaction (JWS) with the App Store
+ *   Server API, check bundleId, productId, environment and revocation.
+ * TODO(Google Play): call purchases.products.get / purchases.subscriptionsv2.get
+ *   with a service account, check packageName, productId, purchaseState, acknowledge.
+ * Until then live mode rejects every purchase.
+ */
+export class LiveIapVerifier implements IapVerifier {
+  async verify(_receipt: IapReceipt): Promise<{ transactionId: string }> {
+    throw new Error('Store purchase verification is not implemented. Purchases are disabled.');
+  }
+}
+
+/** IAP_MODE=stub is honoured only where stubsAllowed() is true (emulator / non-prod). */
+export function iapStubMode(stubsAllowed: boolean): boolean {
+  return process.env.IAP_MODE === 'stub' && stubsAllowed;
+}
+
+/** Only for the emulator / non-production stub flow. Never used in live mode. */
 export function mintStubReceipt(platform: 'apple' | 'google', productId: string): IapReceipt {
   return {
     platform,
