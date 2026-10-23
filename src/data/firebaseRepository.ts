@@ -2,10 +2,14 @@ import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   OAuthProvider,
+  PhoneAuthProvider,
   RecaptchaVerifier,
   getAuth,
+  getRedirectResult,
+  signInWithCredential,
   signInWithPhoneNumber,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type ConfirmationResult,
   type User,
@@ -47,7 +51,10 @@ import type {
   ReportInput,
   ReportStatus,
 } from '../types';
+import { firebaseErrorCode, mapFirebaseAuthCode, retryAfterSeconds } from '../domain/authErrors';
+import { ensureAppCheck } from './appCheck';
 import { RepoError } from './errors';
+import { loadIosNativeAuth } from './nativeAuth';
 import type { LikeOutcome, PhoneStart, Repository } from './repository';
 
 const REGION = 'australia-southeast1';
@@ -56,6 +63,15 @@ function asError(error: unknown, code: string): RepoError {
   if (error instanceof RepoError) return error;
   const message = error instanceof Error ? error.message : 'Request failed';
   return new RepoError(code, message.replace(/^Firebase:\s*/i, ''));
+}
+
+function authFailure(error: unknown): RepoError {
+  if (error instanceof RepoError) return error;
+  const mapped = mapFirebaseAuthCode(firebaseErrorCode(error));
+  if (mapped === 'too-many-requests') {
+    return new RepoError('too-many-requests', String(retryAfterSeconds(error) ?? 30));
+  }
+  return new RepoError(mapped, mapped);
 }
 
 function sessionFromUser(user: User, placeholderAuth: boolean): AuthSession {
@@ -76,6 +92,38 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
   const functions = getFunctions(app, REGION);
   let confirmation: ConfirmationResult | null = null;
   let verifier: RecaptchaVerifier | null = null;
+  let nativeVerificationId: string | null = null;
+  let redirectChecked = false;
+
+  const resetVerifier = async () => {
+    try {
+      verifier?.clear();
+    } catch {
+      /* The widget can already be gone after a failed attempt. */
+    }
+    verifier = null;
+  };
+
+  const rememberRedirectError = (error: unknown) => {
+    if (typeof sessionStorage === 'undefined') return;
+    const mapped = error instanceof RepoError ? error.code : mapFirebaseAuthCode(firebaseErrorCode(error));
+    if (mapped === 'cancelled') return;
+    sessionStorage.setItem('dearx.authError', mapped);
+  };
+
+  const assertNotAgeDenied = async () => {
+    try {
+      const gate = await call<Record<string, never>, { denied: boolean }>('getAgeGateStatus')({});
+      if (gate.data.denied) {
+        await signOut(auth);
+        throw new RepoError('underage', 'underage');
+      }
+    } catch (error) {
+      if (error instanceof RepoError) throw error;
+      await signOut(auth).catch(() => undefined);
+      throw new RepoError('auth-unavailable', 'auth-unavailable');
+    }
+  };
 
   const call = <Req, Res>(name: string) => httpsCallable<Req, Res>(functions, name);
 
@@ -94,50 +142,99 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
     mode: 'firebase',
     async getSession() {
       await auth.authStateReady();
+      if (!redirectChecked) {
+        redirectChecked = true;
+        try {
+          await getRedirectResult(auth);
+        } catch (error) {
+          rememberRedirectError(error);
+        }
+      }
       return auth.currentUser ? sessionFromUser(auth.currentUser, false) : null;
     },
     async beginPhoneSignIn(e164) {
       try {
+        await ensureAppCheck(app);
+        await call<{ phone: string }, { allowed: boolean }>('reservePhoneSignIn')({ phone: e164 });
+        const native = await loadIosNativeAuth();
+        if (native) {
+          const started = await native.signInWithPhoneNumber({ phoneNumber: e164 });
+          if (!started.verificationId) throw new RepoError('captcha', 'captcha');
+          nativeVerificationId = started.verificationId;
+          confirmation = null;
+          return { status: 'code-sent', session: null } satisfies PhoneStart;
+        }
         if (!verifier) {
           verifier = new RecaptchaVerifier(auth, 'dearx-recaptcha', { size: 'invisible' });
         }
         confirmation = await signInWithPhoneNumber(auth, e164, verifier);
         return { status: 'code-sent', session: null } satisfies PhoneStart;
       } catch (error) {
-        throw asError(error, 'phone');
+        await resetVerifier();
+        nativeVerificationId = null;
+        throw authFailure(error);
       }
     },
     async confirmPhoneCode(code) {
       try {
-        if (!confirmation) throw new RepoError('phone', 'Request a code first.');
+        await ensureAppCheck(app);
+        if (nativeVerificationId) {
+          const credential = PhoneAuthProvider.credential(nativeVerificationId, code);
+          const cred = await signInWithCredential(auth, credential);
+          nativeVerificationId = null;
+          await assertNotAgeDenied();
+          return sessionFromUser(cred.user, false);
+        }
+        if (!confirmation) throw new RepoError('code-expired', 'code-expired');
         const cred = await confirmation.confirm(code);
         confirmation = null;
-        const gate = await call<Record<string, never>, { denied: boolean }>('getAgeGateStatus')({});
-        if (gate.data.denied) {
-          await signOut(auth);
-          throw new RepoError('underage', 'This sign-in is blocked by the 18+ gate.');
-        }
+        await assertNotAgeDenied();
         return sessionFromUser(cred.user, false);
       } catch (error) {
-        throw asError(error, 'phone');
+        throw authFailure(error);
       }
     },
     async signInWithProvider(provider) {
       try {
+        await ensureAppCheck(app);
+        const native = await loadIosNativeAuth();
+        if (native) {
+          if (provider === 'apple') {
+            const result = await native.signInWithApple();
+            const oauth = new OAuthProvider('apple.com');
+            const idToken = result.credential?.idToken;
+            if (!idToken) throw new RepoError('internal', 'internal');
+            const credential = oauth.credential({ idToken, rawNonce: result.credential?.nonce });
+            const cred = await signInWithCredential(auth, credential);
+            await assertNotAgeDenied();
+            return sessionFromUser(cred.user, false);
+          }
+          const result = await native.signInWithGoogle();
+          const idToken = result.credential?.idToken;
+          if (!idToken) throw new RepoError('internal', 'internal');
+          const credential = GoogleAuthProvider.credential(idToken, result.credential?.accessToken);
+          const cred = await signInWithCredential(auth, credential);
+          await assertNotAgeDenied();
+          return sessionFromUser(cred.user, false);
+        }
         const oauth = provider === 'apple' ? new OAuthProvider('apple.com') : new GoogleAuthProvider();
         if (provider === 'apple') {
           oauth.addScope('email');
           oauth.addScope('name');
+        } else {
+          oauth.setCustomParameters({ prompt: 'select_account' });
         }
-        const cred = await signInWithPopup(auth, oauth);
-        const gate = await call<Record<string, never>, { denied: boolean }>('getAgeGateStatus')({});
-        if (gate.data.denied) {
-          await signOut(auth);
-          throw new RepoError('underage', 'This sign-in is blocked by the 18+ gate.');
+        try {
+          const cred = await signInWithPopup(auth, oauth);
+          await assertNotAgeDenied();
+          return sessionFromUser(cred.user, false);
+        } catch (error) {
+          if (mapFirebaseAuthCode(firebaseErrorCode(error)) !== 'popup-blocked') throw error;
+          await signInWithRedirect(auth, oauth);
+          throw new RepoError('popup-blocked', 'popup-blocked');
         }
-        return sessionFromUser(cred.user, false);
       } catch (error) {
-        throw asError(error, 'provider');
+        throw authFailure(error);
       }
     },
     async signOut() {

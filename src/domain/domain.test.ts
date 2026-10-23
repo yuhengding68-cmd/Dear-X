@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { mapFirebaseAuthCode, retryAfterSeconds } from './authErrors';
 import { ageOn, calendarDate, isAtLeast18 } from './age';
+import { decidePhoneSignIn, EMPTY_PHONE_LIMIT, PHONE_SIGN_IN_LIMITS } from './phoneSignInLimit';
+import { hasPrivateAccountField } from './profileSafety';
 import { resolveAppConfig } from '../config';
 import { creatorShareCents, planPurchase } from './commerce';
 import { applyLike } from './matching';
 import { moderateWithKeywordStub } from './moderation';
 import { normalizePhone } from './phone';
-import { createPost, deleteAccount, exportData, like, sendMessage, visibleCreators, visibleProfiles } from '../data/demo/logic';
+import { completeOnboarding, createPost, deleteAccount, exportData, like, sendMessage, visibleCreators, visibleProfiles } from '../data/demo/logic';
 import { createSeedState } from '../data/demo/seed';
 import type { Creator } from '../types';
 
@@ -19,6 +22,82 @@ assert.equal(ageOn('not-a-date'), null);
 assert.equal(normalizePhone('+61', '400 000 002'), '+61400000002');
 assert.equal(normalizePhone('+61', '0400000002'), '+61400000002');
 assert.equal(normalizePhone('+61', '0299998888'), null);
+
+assert.equal(mapFirebaseAuthCode('auth/invalid-verification-code'), 'invalid-code');
+assert.equal(mapFirebaseAuthCode('auth/too-many-requests'), 'too-many-requests');
+assert.equal(mapFirebaseAuthCode('functions/resource-exhausted'), 'too-many-requests');
+assert.equal(mapFirebaseAuthCode('auth/popup-closed-by-user'), 'cancelled');
+assert.equal(mapFirebaseAuthCode('auth/operation-not-allowed'), 'provider-disabled');
+assert.equal(retryAfterSeconds(new Error('Wait 30 seconds')), 30);
+
+const firstSend = decidePhoneSignIn(EMPTY_PHONE_LIMIT, 1_000, PHONE_SIGN_IN_LIMITS);
+assert.equal(firstSend.allowed, true);
+const cooled = decidePhoneSignIn(firstSend.next ?? EMPTY_PHONE_LIMIT, 1_000 + 10_000, PHONE_SIGN_IN_LIMITS);
+assert.equal(cooled.allowed, false);
+assert.equal(cooled.reason, 'cooldown');
+assert.equal(cooled.retryAfterSeconds, 20);
+let limited = firstSend.next ?? EMPTY_PHONE_LIMIT;
+let sentAt = 1_000;
+for (let i = 0; i < 4; i += 1) {
+  sentAt += PHONE_SIGN_IN_LIMITS.minGapMs;
+  const next = decidePhoneSignIn(limited, sentAt, PHONE_SIGN_IN_LIMITS);
+  assert.equal(next.allowed, true);
+  limited = next.next ?? limited;
+}
+const blockedWindow = decidePhoneSignIn(limited, sentAt + PHONE_SIGN_IN_LIMITS.minGapMs, PHONE_SIGN_IN_LIMITS);
+assert.equal(blockedWindow.allowed, false);
+assert.equal(blockedWindow.reason, 'window');
+
+const fresh = createSeedState();
+fresh.users.push({
+  uid: 'user-new',
+  role: 'user',
+  phone: '+61400999111',
+  provider: 'phone',
+  dateOfBirth: null,
+  displayName: '',
+  createdAt: '2026-10-23T00:00:00.000Z',
+  onboardingComplete: false,
+  locale: 'en',
+});
+const onboarded = completeOnboarding(
+  fresh,
+  'user-new',
+  {
+    dateOfBirth: '2000-01-01',
+    displayName: 'New Person',
+    gender: 'unspecified',
+    bio: 'Hello there',
+    city: 'Sydney',
+    interests: ['study'],
+    photoUrl: null,
+    acceptedTerms: true,
+    locale: 'en',
+  },
+  '2026-10-23T00:00:00.000Z',
+);
+const publicProfile = onboarded.profiles.find((profile) => profile.uid === 'user-new');
+assert.ok(publicProfile);
+assert.equal(hasPrivateAccountField(publicProfile), false);
+assert.equal(onboarded.users.find((user) => user.uid === 'user-new')?.dateOfBirth, '2000-01-01');
+assert.throws(() =>
+  completeOnboarding(
+    fresh,
+    'user-new',
+    {
+      dateOfBirth: '2015-01-01',
+      displayName: 'Kid',
+      gender: 'unspecified',
+      bio: 'Hello there',
+      city: 'Sydney',
+      interests: ['study'],
+      photoUrl: null,
+      acceptedTerms: true,
+      locale: 'en',
+    },
+    '2026-10-23T00:00:00.000Z',
+  ),
+);
 
 assert.equal(resolveAppConfig({}).ok, false);
 const demoMode = resolveAppConfig({ VITE_DATA_MODE: 'demo' });

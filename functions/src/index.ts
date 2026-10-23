@@ -1,9 +1,11 @@
+import { createHash } from 'crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { FieldValue, getFirestore, type Query } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore, type DocumentSnapshot, type Query } from 'firebase-admin/firestore';
 import { defineSecret } from 'firebase-functions/params';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { ageOn, denialKey, isAtLeast18 } from './ageGate';
+import { decidePhoneSignIn, IP_SIGN_IN_LIMITS, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from './phoneSignInLimit';
 import { moderateText } from './geminiService';
 import { LiveIapVerifier, StubIapVerifier, iapStubMode, mintStubReceipt, type IapReceipt } from './iap';
 import { createKycVendor, stubKycCompletionAllowed, stubsAllowed } from './kycVendor';
@@ -23,6 +25,8 @@ const DELETED = 'deleted-user';
 
 const callable = { region: REGION };
 const moderated = { region: REGION, secrets: [GEMINI_API_KEY] };
+const enforceAppCheck = process.env.ENFORCE_APP_CHECK === 'true';
+const PRIVATE_PROFILE_KEYS = ['dateOfBirth', 'phone', 'email', 'role', 'provider', 'dob'] as const;
 
 function uidOf(request: CallableRequest): string {
   if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in required.');
@@ -101,6 +105,54 @@ async function deleteQuery(ref: Query): Promise<void> {
   await Promise.all(snap.docs.map((item) => item.ref.delete()));
 }
 
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function limitState(snap: DocumentSnapshot): PhoneLimitState {
+  const raw = snap.get('attempts');
+  const attempts = Array.isArray(raw) ? raw.filter((item): item is number => typeof item === 'number') : [];
+  return { attempts, lastSentAt: attempts.length > 0 ? Math.max(...attempts) : null };
+}
+
+function clientIp(request: CallableRequest): string | null {
+  const raw = request.rawRequest as { ip?: string; headers?: Record<string, string | string[] | undefined> } | undefined;
+  if (!raw) return null;
+  const forwarded = raw.headers?.['x-forwarded-for'];
+  const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  if (typeof value === 'string' && value.trim()) return value.split(',')[0]!.trim();
+  return raw.ip ?? null;
+}
+
+/**
+ * Reserve a phone-auth SMS before the client calls Firebase Auth.
+ * Unauthenticated on purpose: the user does not have a session yet.
+ * Counts are stored under a hash. The phone number itself is not written.
+ */
+export const reservePhoneSignIn = onCall({ region: REGION, enforceAppCheck }, async (request) => {
+  const phone = textField(payload(request), 'phone', 20);
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new HttpsError('invalid-argument', 'Invalid phone number.');
+  const now = Date.now();
+  const phoneRef = db.doc(`phoneSignInLimits/phone_${sha256(phone)}`);
+  const ip = clientIp(request);
+  const ipRef = ip ? db.doc(`phoneSignInLimits/ip_${sha256(ip)}`) : null;
+  const decision = await db.runTransaction(async (tx) => {
+    const phoneSnap = await tx.get(phoneRef);
+    const phoneDecision = decidePhoneSignIn(limitState(phoneSnap), now, PHONE_SIGN_IN_LIMITS);
+    if (!phoneDecision.allowed || !phoneDecision.next) return phoneDecision;
+    if (ipRef) {
+      const ipSnap = await tx.get(ipRef);
+      const ipDecision = decidePhoneSignIn(limitState(ipSnap), now, IP_SIGN_IN_LIMITS);
+      if (!ipDecision.allowed || !ipDecision.next) return ipDecision;
+      tx.set(ipRef, { attempts: ipDecision.next.attempts });
+    }
+    tx.set(phoneRef, { attempts: phoneDecision.next.attempts });
+    return phoneDecision;
+  });
+  if (!decision.allowed) throw new HttpsError('resource-exhausted', String(decision.retryAfterSeconds));
+  return { allowed: true };
+});
+
 export const getAgeGateStatus = onCall(callable, async (request) => {
   const uid = uidOf(request);
   return { denied: await isDenied(uid, phoneOf(request)) };
@@ -171,6 +223,9 @@ export const completeOnboarding = onCall(callable, async (request) => {
     interests,
     photoUrl: cleanPhoto(data.photoUrl),
   };
+  for (const key of PRIVATE_PROFILE_KEYS) {
+    if (key in profile) throw new HttpsError('internal', 'Public profile cannot store private account fields.');
+  }
   await db.doc(`users/${uid}`).set(user);
   await db.doc(`profiles/${uid}`).set(profile);
   return { user };

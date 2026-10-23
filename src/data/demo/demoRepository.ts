@@ -1,4 +1,5 @@
 import { denialKey } from '../../domain/age';
+import { decidePhoneSignIn, EMPTY_PHONE_LIMIT, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from '../../domain/phoneSignInLimit';
 import { createStubIapToken } from '../../domain/commerce';
 import type {
   AuthProvider,
@@ -74,6 +75,16 @@ function saveSession(session: AuthSession | null): void {
 export function createDemoRepository(): Repository {
   let state = loadState();
   let session = loadSession();
+  let pendingPhone: string | null = null;
+  let phoneLimit: PhoneLimitState = EMPTY_PHONE_LIMIT;
+
+  const reserveDemoPhone = () => {
+    const decision = decidePhoneSignIn(phoneLimit, Date.now(), PHONE_SIGN_IN_LIMITS);
+    if (!decision.allowed || !decision.next) {
+      throw new RepoError('too-many-requests', String(decision.retryAfterSeconds));
+    }
+    phoneLimit = decision.next;
+  };
 
   const persist = () => saveState(state);
 
@@ -113,10 +124,23 @@ export function createDemoRepository(): Repository {
       if (state.ageDenials.includes(denial)) {
         throw new RepoError('underage', 'This number is blocked by the 18+ gate.');
       }
+      reserveDemoPhone();
       const existing = state.users.find((user) => user.phone === e164);
       if (existing) {
+        pendingPhone = null;
         return { status: 'signed-in', session: signInExisting(existing.uid, 'phone', true) };
       }
+      pendingPhone = e164;
+      return { status: 'code-sent', session: null };
+    },
+    async confirmPhoneCode(code: string) {
+      refresh();
+      if (!pendingPhone) throw new RepoError('code-expired', 'code-expired');
+      if (code.trim() !== '000000') throw new RepoError('invalid-code', 'invalid-code');
+      const e164 = pendingPhone;
+      pendingPhone = null;
+      const existing = state.users.find((user) => user.phone === e164);
+      if (existing) return signInExisting(existing.uid, 'phone', true);
       const id = `user-${crypto.randomUUID()}`;
       state = {
         ...state,
@@ -136,10 +160,7 @@ export function createDemoRepository(): Repository {
         ],
       };
       persist();
-      return { status: 'signed-in', session: signInExisting(id, 'phone', true) };
-    },
-    async confirmPhoneCode() {
-      throw new RepoError('demo-sms', 'Demo mode does not send SMS codes.');
+      return signInExisting(id, 'phone', true);
     },
     async signInWithProvider(provider: 'apple' | 'google') {
       refresh();

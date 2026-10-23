@@ -8,4 +8,9 @@ interface ImportMetaEnv {
   readonly VITE_FIREBASE_APP_ID?: string;
   readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string;
   readonly VITE_FIREBASE_STORAGE_BUCKET?: string;
+  readonly VITE_FIREBASE_APPCHECK_SITE_KEY?: string;
+  /** `enterprise` (default) or `v3`. */
+  readonly VITE_FIREBASE_APPCHECK_PROVIDER?: string;
+  /** Local debug token only. Never commit a real value. */
+  readonly VITE_FIREBASE_APPCHECK_DEBUG_TOKEN?: string;
 }

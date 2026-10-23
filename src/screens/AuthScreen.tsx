@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Smartphone } from 'lucide-react';
 import { DEFAULT_COUNTRY_CODE, normalizePhone } from '../domain/phone';
 import { DEMO_PHONES } from '../data/demo/seed';
@@ -29,14 +29,30 @@ export function AuthScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const textFor = (caught: unknown) => {
+    if (caught instanceof RepoError) {
+      if (caught.code === 'underage') return t('onboarding.blockedBody');
+      const key = `auth.err.${caught.code}`;
+      const translated = t(key, caught.code === 'too-many-requests' ? { seconds: caught.message || '30' } : undefined);
+      if (translated !== key) return translated;
+    }
+    return t('common.error');
+  };
+
+  useEffect(() => {
+    const code = sessionStorage.getItem('dearx.authError');
+    if (!code) return;
+    sessionStorage.removeItem('dearx.authError');
+    setError(textFor(new RepoError(code, code)));
+  }, [t]);
+
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
       await work();
     } catch (caught) {
-      if (caught instanceof RepoError && caught.code === 'underage') setError(t('onboarding.blockedBody'));
-      else setError(caught instanceof Error ? caught.message : t('common.error'));
+      setError(textFor(caught));
     } finally {
       setBusy(false);
     }
