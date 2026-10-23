@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import { Heart, MessageCircle, Settings, Shield, Sparkles } from 'lucide-react';
-import { LanguageButton, Logo, LogoX, ModePill, TopBar } from '../components/ui';
+import { Bell, Compass, Filter, Gem, MessageCircle, User as UserIcon, Wallet } from 'lucide-react';
+import { ComingSoonToast, comingSoon, LanguageButton, Logo, LogoX, ModePill, TopBar } from '../components/ui';
 import { useI18n } from '../i18n';
 import { useApp, type Tab } from '../state/AppProvider';
 import { AdminScreen } from './AdminScreen';
@@ -48,13 +48,13 @@ export function Root() {
 
   if (app.route.name === 'main' && app.session) {
     const tab = app.route.tab;
-    // Original DearX shell (header + bottom nav). Wallet/leaderboard tabs replaced by matches/creators/safety.
-    const navItems: { tab: Tab; color: string; dot: string; icon: ReactNode }[] = [
-      { tab: 'discover', color: 'text-brand-blue bg-brand-blue/10', dot: 'bg-brand-blue', icon: <div className="w-6 h-6 flex items-center justify-center"><LogoX className="w-5 h-5" /></div> },
-      { tab: 'matches', color: 'text-brand-purple bg-brand-purple/10', dot: 'bg-brand-purple', icon: <Heart className="w-6 h-6" /> },
-      { tab: 'chats', color: 'text-white bg-white/10', dot: 'bg-white', icon: <MessageCircle className="w-6 h-6" /> },
-      { tab: 'creators', color: 'text-brand-yellow bg-brand-yellow/10', dot: 'bg-brand-yellow', icon: <Sparkles className="w-6 h-6" /> },
-      { tab: 'safety', color: 'text-white bg-white/10', dot: 'bg-white', icon: <Shield className="w-6 h-6" /> },
+    // Original DearX shell: same header and 5 bottom tabs, same order. Unbuilt features show "Coming soon".
+    const navItems: { key: string; active: boolean; onClick: () => void; color: string; dot: string; icon: ReactNode }[] = [
+      { key: 'swipe', active: tab === 'discover', onClick: () => app.go({ name: 'main', tab: 'discover' }), color: 'text-brand-blue bg-brand-blue/10', dot: 'bg-brand-blue', icon: <div className="w-6 h-6 flex items-center justify-center"><LogoX className="w-5 h-5" /></div> },
+      { key: 'discover', active: false, onClick: comingSoon, color: 'text-brand-purple bg-brand-purple/10', dot: 'bg-brand-purple', icon: <Compass className="w-6 h-6" /> },
+      { key: 'messages', active: tab === 'chats', onClick: () => app.go({ name: 'main', tab: 'chats' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <MessageCircle className="w-6 h-6" /> },
+      { key: 'wallet', active: false, onClick: comingSoon, color: 'text-brand-yellow bg-brand-yellow/10', dot: 'bg-brand-yellow', icon: <Wallet className="w-6 h-6" /> },
+      { key: 'profile', active: false, onClick: () => app.go({ name: 'settings' }), color: 'text-white bg-white/10', dot: 'bg-white', icon: <UserIcon className="w-6 h-6" /> },
     ];
     return (
       <div className="h-screen w-full flex flex-col bg-[#12122A] text-white overflow-hidden relative font-sans">
@@ -68,13 +68,19 @@ export function Root() {
             <span className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-br from-brand-blue to-brand-purple -mt-1">X</span>
           </div>
           <div className="flex items-center gap-3">
-            {app.repo.mode === 'demo' ? (
-              <div className="bg-white/5 px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/5 backdrop-blur-sm">
-                <span className="text-xs font-bold text-white">{t('common.demoMode')}</span>
-              </div>
-            ) : null}
-            <button type="button" aria-label={t('settings.title')} onClick={() => app.go({ name: 'settings' })} className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center relative">
-              <Settings className="w-5 h-5 text-white" />
+            {tab === 'discover' && (
+              <button type="button" onClick={comingSoon} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center border border-white/10 backdrop-blur-sm active:scale-95 transition-transform hover:bg-white/20">
+                <Filter className="w-4 h-4 text-white" />
+              </button>
+            )}
+            {/* Diamond balance: display only, no client money logic. Shows 0 until gifts are built. */}
+            <button type="button" onClick={comingSoon} className="bg-white/5 px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/5 backdrop-blur-sm">
+              <Gem className="w-4 h-4 text-brand-yellow" />
+              <span className="text-sm font-bold text-white">0</span>
+              {app.repo.mode === 'demo' ? <span className="text-[9px] font-bold text-brand-subtext uppercase">{t('look.demoBalance')}</span> : null}
+            </button>
+            <button type="button" onClick={comingSoon} className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center relative">
+              <Bell className="w-5 h-5 text-white" />
             </button>
           </div>
         </header>
@@ -92,19 +98,19 @@ export function Root() {
         <nav className="fixed bottom-0 left-0 right-0 h-20 glass-nav border-t border-white/5 flex items-center justify-around px-2 z-50 pb-2">
           {navItems.map((item) => (
             <button
-              key={item.tab}
+              key={item.key}
               type="button"
-              aria-label={t(`nav.${item.tab === 'chats' ? 'chat' : item.tab}`)}
-              onClick={() => app.go({ name: 'main', tab: item.tab })}
-              className={`p-3 rounded-2xl transition-all ${tab === item.tab ? item.color : 'text-brand-subtext hover:text-white'}`}
+              onClick={item.onClick}
+              className={`p-3 rounded-2xl transition-all ${item.active ? item.color : 'text-brand-subtext hover:text-white'}`}
             >
               <div className="relative">
                 {item.icon}
-                {tab === item.tab && <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${item.dot}`}></div>}
+                {item.active && <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${item.dot}`}></div>}
               </div>
             </button>
           ))}
         </nav>
+        <ComingSoonToast />
       </div>
     );
   }

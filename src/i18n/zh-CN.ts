@@ -24,7 +24,10 @@ export const zhCN: Dictionary = {
     invalid: 'VITE_DATA_MODE 只能是 demo 或 firebase。',
   },
   look: {
-    tagline: '相识。聊天。心动。',
+    tagline: 'Connect. Gift. Vibe.',
+    comingSoon: '即将推出',
+    demoBalance: '演示',
+    about: '关于',
     continuePhone: '使用手机号继续',
     or: '或',
     apple: '通过 Apple 继续',

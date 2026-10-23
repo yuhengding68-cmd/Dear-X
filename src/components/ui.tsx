@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ComponentType, ReactNode } from 'react';
+import { useEffect, useState, type ButtonHTMLAttributes, type ComponentType, type ReactNode } from 'react';
 import { useI18n } from '../i18n';
 import type { DataMode } from '../types';
 
@@ -157,5 +157,34 @@ export function LogoX(props: { className?: string }) {
         X
       </text>
     </svg>
+  );
+}
+
+/** Shows the "Coming soon" toast for original buttons whose feature is not built yet. */
+export function comingSoon() {
+  window.dispatchEvent(new CustomEvent('dearx:coming-soon'));
+}
+
+export function ComingSoonToast() {
+  const { t } = useI18n();
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const show = () => {
+      setVisible(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setVisible(false), 1800);
+    };
+    window.addEventListener('dearx:coming-soon', show);
+    return () => {
+      window.removeEventListener('dearx:coming-soon', show);
+      clearTimeout(timer);
+    };
+  }, []);
+  if (!visible) return null;
+  return (
+    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[70] glass-pill px-4 py-2 rounded-full text-sm font-bold text-white animate-fade-in">
+      {t('look.comingSoon')}
+    </div>
   );
 }

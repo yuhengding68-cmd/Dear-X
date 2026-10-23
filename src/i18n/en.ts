@@ -22,7 +22,10 @@ export const en = {
     invalid: 'VITE_DATA_MODE must be demo or firebase.',
   },
   look: {
-    tagline: 'Connect. Chat. Vibe.',
+    tagline: 'Connect. Gift. Vibe.',
+    comingSoon: 'Coming soon',
+    demoBalance: 'Demo',
+    about: 'About',
     continuePhone: 'Continue with Phone',
     or: 'Or',
     apple: 'Continue with Apple',

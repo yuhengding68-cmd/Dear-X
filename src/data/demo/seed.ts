@@ -225,6 +225,13 @@ const profiles: DatingProfile[] = [
     photoUrl: 'https://images.unsplash.com/photo-1531123897727-8f129e1688ce?auto=format&fit=crop&w=800&q=80',
   }),
 ];
+// Demo-only: a "Real" badge on every other profile and a second photo so the
+// original multi-photo card can be tried. Live data sets these server-side.
+profiles.forEach((item, index) => {
+  item.verified = index % 2 === 0;
+  if (item.photoUrl) item.photoUrls = [item.photoUrl, `${item.photoUrl}&sat=-100`];
+});
+
 
 const creators: Creator[] = [
   {

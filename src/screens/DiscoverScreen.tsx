@@ -1,9 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Flag, MapPin, Search, RotateCcw, ThumbsUp, X } from 'lucide-react';
+import { BadgeCheck, Gift as GiftIcon, Info, MapPin, Search, RotateCcw, ThumbsUp, X } from 'lucide-react';
 import type { DatingProfile } from '../types';
 import { useI18n } from '../i18n';
 import { useApp } from '../state/AppProvider';
-import { OriginalButton } from '../components/ui';
+import { OriginalButton, comingSoon } from '../components/ui';
 import { ReportDialog } from '../components/ReportDialog';
 
 interface SwipeableCardRef {
@@ -21,7 +21,9 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
   const [isDragging, setIsDragging] = useState(false);
   const [rotation, setRotation] = useState(0);
   const [swipeResult, setSwipeResult] = useState<'like' | 'nope' | null>(null);
-  const photos = profile.photoUrl ? [profile.photoUrl] : [];
+  const photos = profile.photoUrls?.length ? profile.photoUrls : profile.photoUrl ? [profile.photoUrl] : [];
+  const [photoIndex, setPhotoIndex] = useState(0);
+  const cardRef = useRef<HTMLDivElement>(null);
   const startPos = useRef({ x: 0, y: 0 });
 
   const reset = () => {
@@ -60,9 +62,20 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
     else setSwipeResult(null);
   };
 
-  const handleTouchEnd = () => {
+  const handleTouchEnd = (e: React.TouchEvent | React.MouseEvent) => {
     if (!isDragging) return;
     setIsDragging(false);
+    // Tap (no movement): left half = previous photo, right half = next photo (original behaviour).
+    if (Math.abs(offset.x) < 5 && Math.abs(offset.y) < 5) {
+      const clientX = 'changedTouches' in e ? e.changedTouches[0].clientX : (e as React.MouseEvent).clientX;
+      if (cardRef.current) {
+        const { left, width } = cardRef.current.getBoundingClientRect();
+        if (clientX - left < width / 2) setPhotoIndex((prev) => Math.max(0, prev - 1));
+        else setPhotoIndex((prev) => Math.min(photos.length - 1, prev + 1));
+      }
+      reset();
+      return;
+    }
     if (Math.abs(offset.x) > 150) {
       const direction = offset.x > 0 ? 'right' : 'left';
       setOffset({ x: offset.x > 0 ? 1000 : -1000, y: 0 });
@@ -78,6 +91,7 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
   return (
     <div className="absolute inset-0 w-full h-full flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: 10 }}>
       <div
+        ref={cardRef}
         className="w-full h-full relative rounded-3xl overflow-hidden shadow-float pointer-events-auto transition-transform duration-100 ease-out bg-[#1C1C33]"
         style={{
           transform: `translate(${offset.x}px, ${offset.y}px) rotate(${rotation}deg) scale(${isDragging ? 1.05 : 1})`,
@@ -94,12 +108,12 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
         {/* Photo Navigation Indicators */}
         <div className="absolute top-2 left-2 right-2 flex gap-1 z-30">
           {photos.map((_, i) => (
-            <div key={i} className="h-1 flex-1 rounded-full transition-colors bg-white" />
+            <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i === photoIndex ? 'bg-white' : 'bg-white/30'}`} />
           ))}
         </div>
 
-        {photos[0] ? (
-          <img src={photos[0]} alt={profile.displayName} className="w-full h-full object-cover select-none pointer-events-none" draggable={false} />
+        {photos[photoIndex] ? (
+          <img src={photos[photoIndex]} alt={profile.displayName} className="w-full h-full object-cover select-none pointer-events-none" draggable={false} />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-vibe-gradient text-7xl font-black">{profile.displayName.slice(0, 1)}</div>
         )}
@@ -125,15 +139,21 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <h2 className="text-3xl font-bold drop-shadow-lg">{profile.displayName}, {profile.age}</h2>
+                {profile.verified && (
+                  <div className="flex items-center gap-1 bg-brand-blue/90 backdrop-blur-sm px-2 py-0.5 rounded-full border border-white/20 shadow-[0_0_15px_rgba(46,92,255,0.5)] ml-1">
+                    <BadgeCheck className="w-3.5 h-3.5 text-white" strokeWidth={3} />
+                    <span className="text-[10px] font-bold text-white uppercase tracking-wider">Real</span>
+                  </div>
+                )}
                 <button
                   type="button"
-                  aria-label={t('look.reportOrBlock')}
+                  aria-label={t('look.about')}
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); onSafetyClick(); }}
                   className="glass-pill p-1.5 rounded-full hover:bg-white/20 transition-colors ml-1 pointer-events-auto"
                 >
-                  <Flag className="w-4 h-4 text-white" />
+                  <Info className="w-4 h-4 text-white" />
                 </button>
               </div>
 
@@ -241,6 +261,17 @@ export function DiscoverScreen() {
         >
           <X className="w-7 h-7" strokeWidth={3} />
         </button>
+        {/* Super Gift — kept from the original; gifts are not built yet. */}
+        <button
+          type="button"
+          onClick={comingSoon}
+          className="w-20 h-20 rounded-full bg-cyber-gradient text-black flex items-center justify-center shadow-glow-cyber hover:scale-105 transition-all relative group"
+        >
+          <GiftIcon className="w-10 h-10 group-hover:animate-bounce" />
+          <div className="absolute -bottom-8 bg-brand-yellow/10 text-brand-yellow text-[10px] font-bold px-2 py-0.5 rounded-full border border-brand-yellow/20 opacity-0 group-hover:opacity-100 transition-opacity">
+            SEND GIFT
+          </div>
+        </button>
         <button
           type="button"
           aria-label={t('discover.like')}
@@ -254,6 +285,11 @@ export function DiscoverScreen() {
       {safetyMenu ? (
         <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in" onClick={() => setSafetyMenu(false)}>
           <div className="w-full max-w-md glass-card rounded-3xl p-4 space-y-3 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <div className="px-2 pt-1 pb-2">
+              <h3 className="text-xl font-bold">{currentProfile.displayName}, {currentProfile.age}</h3>
+              <p className="text-sm text-brand-subtext">{currentProfile.city}</p>
+              <p className="text-sm text-white/80 mt-2 leading-relaxed">{currentProfile.bio}</p>
+            </div>
             <OriginalButton variant="glass" onClick={() => { setSafetyMenu(false); setReporting(true); }}>{t('common.report')}</OriginalButton>
             <OriginalButton variant="glass" className="text-red-400" onClick={() => { setSafetyMenu(false); void repo.blockUser(currentProfile.uid).then(load); }}>{t('common.block')}</OriginalButton>
             <OriginalButton variant="ghost" onClick={() => setSafetyMenu(false)}>{t('look.back')}</OriginalButton>

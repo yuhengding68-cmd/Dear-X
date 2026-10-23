@@ -45,6 +45,10 @@ export interface DatingProfile {
   distanceKm: number | null;
   interests: string[];
   photoUrl: string | null;
+  /** Extra photos for the card carousel (photoUrl first). Optional. */
+  photoUrls?: string[];
+  /** Real-person (selfie) verification passed. Set by the server only. */
+  verified?: boolean;
 }
 
 export interface Like {
