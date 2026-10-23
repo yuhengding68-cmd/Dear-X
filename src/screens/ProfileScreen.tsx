@@ -29,6 +29,7 @@ import type { Creator, DatingProfile, KycStatus, MyReportStatus } from '../types
 import { downloadJson } from '../lib/download';
 import { useI18n } from '../i18n';
 import { useApp } from '../state/AppProvider';
+import { normalizeAppPreferences } from '../domain/activity';
 import { profileSharePayload } from '../domain/profileEdit';
 import { publishedSupportEmail } from '../domain/safetyQueue';
 import { OriginalButton, comingSoon } from '../components/ui';
@@ -64,7 +65,7 @@ function SettingsModal({
   onSignOut: () => void;
 }) {
   const { t, locale, setLocale } = useI18n();
-  const { repo, me, go, setNotice } = useApp();
+  const { repo, me, go, setNotice, reloadMe } = useApp();
   const [pushEnabled, setPushEnabled] = useState(true);
   const [emailEnabled, setEmailEnabled] = useState(false);
   const [ghostMode, setGhostMode] = useState(false);
@@ -72,6 +73,23 @@ function SettingsModal({
   const [phrase, setPhrase] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const prefs = normalizeAppPreferences(me);
+    setPushEnabled(prefs.pushEnabled);
+    setEmailEnabled(prefs.emailUpdates);
+    setGhostMode(prefs.ghostMode);
+  }, [me]);
+
+  const persistPrefs = (next: { pushEnabled: boolean; emailUpdates: boolean; ghostMode: boolean }) => {
+    setPushEnabled(next.pushEnabled);
+    setEmailEnabled(next.emailUpdates);
+    setGhostMode(next.ghostMode);
+    void repo
+      .saveAppPreferences(next)
+      .then(() => reloadMe())
+      .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : t('common.error')));
+  };
 
   const Toggle = ({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) => (
     <button
@@ -145,14 +163,14 @@ function SettingsModal({
                 <BellRing className="w-5 h-5 text-white/70" />
                 <span className="text-white font-medium">{t('profile.push')}</span>
               </div>
-              <Toggle checked={pushEnabled} onChange={setPushEnabled} />
+              <Toggle checked={pushEnabled} onChange={(value) => persistPrefs({ pushEnabled: value, emailUpdates: emailEnabled, ghostMode })} />
             </div>
             <div className="flex items-center justify-between p-4">
               <div className="flex items-center gap-3">
                 <Mail className="w-5 h-5 text-white/70" />
                 <span className="text-white font-medium">{t('profile.emailUpdates')}</span>
               </div>
-              <Toggle checked={emailEnabled} onChange={setEmailEnabled} />
+              <Toggle checked={emailEnabled} onChange={(value) => persistPrefs({ pushEnabled, emailUpdates: value, ghostMode })} />
             </div>
           </div>
         </div>
@@ -167,7 +185,7 @@ function SettingsModal({
                 <p className="text-xs text-brand-subtext">{t('profile.ghostHint')}</p>
               </div>
             </div>
-            <Toggle checked={ghostMode} onChange={setGhostMode} />
+            <Toggle checked={ghostMode} onChange={(value) => persistPrefs({ pushEnabled, emailUpdates: emailEnabled, ghostMode: value })} />
           </div>
         </div>
 

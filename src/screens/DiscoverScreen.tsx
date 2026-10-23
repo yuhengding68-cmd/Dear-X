@@ -138,7 +138,7 @@ const SwipeableCard = forwardRef<SwipeableCardRef, {
           <div className="flex items-end justify-between mb-2">
             <div>
               <div className="flex items-center gap-2 mb-1">
-                <h2 className="text-3xl font-bold drop-shadow-lg">{profile.displayName}, {profile.age}</h2>
+                <h2 data-testid="discover-name" className="text-3xl font-bold drop-shadow-lg">{profile.displayName}, {profile.age}</h2>
                 {profile.verified && (
                   <div className="flex items-center gap-1 bg-brand-blue/90 backdrop-blur-sm px-2 py-0.5 rounded-full border border-white/20 shadow-[0_0_15px_rgba(46,92,255,0.5)] ml-1">
                     <BadgeCheck className="w-3.5 h-3.5 text-white" strokeWidth={3} />
@@ -190,7 +190,7 @@ SwipeableCard.displayName = 'SwipeableCard';
 /** Original SwipeView layout, wired to repo like/pass, report and block. */
 export function DiscoverScreen() {
   const { t } = useI18n();
-  const { repo, go } = useApp();
+  const { repo, go, discoverNonce } = useApp();
   const [cards, setCards] = useState<DatingProfile[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +209,7 @@ export function DiscoverScreen() {
       .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : t('common.error')));
   };
 
-  useEffect(load, [repo, t]);
+  useEffect(load, [repo, t, discoverNonce]);
 
   const currentProfile = cards[0];
 

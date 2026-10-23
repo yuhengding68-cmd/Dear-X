@@ -24,6 +24,8 @@ import {
   type ProfilePhotoRecord,
   type ProfileTextInput,
 } from '../../domain/profileEdit';
+import { makeInboxItem, nextLastSeen, normalizeAppPreferences, presenceFrom, type AppPreferences } from '../../domain/activity';
+import { normalizeDiscoverFilters, profileFitsDiscover, type DiscoverFilters } from '../../domain/discover';
 import { isAccountBlocked, reportDueAt, reportSla, supportTicketInput, type ReportAction } from '../../domain/safetyQueue';
 import type {
   Balance,
@@ -37,6 +39,7 @@ import type {
   KycProviderName,
   Message,
   ModerationAudit,
+  InboxItem,
   MyReportStatus,
   OnboardingInput,
   Pass,
@@ -62,7 +65,15 @@ export function visibleProfiles(state: DemoState, uid: string): DatingProfile[] 
     }
   }
   const onboarded = new Set(state.users.filter((user) => user.onboardingComplete && user.role !== 'admin' && !isAccountBlocked(user.accountStanding)).map((user) => user.uid));
-  return state.profiles.filter((profile) => onboarded.has(profile.uid) && !skip.has(profile.uid) && !blocked.has(profile.uid));
+  const viewer = state.users.find((user) => user.uid === uid);
+  const filters = normalizeDiscoverFilters(viewer?.discoverFilters);
+  const viewerCity = state.profiles.find((profile) => profile.uid === uid)?.city ?? '';
+  return state.profiles.flatMap((profile) => {
+    if (!onboarded.has(profile.uid) || skip.has(profile.uid) || blocked.has(profile.uid)) return [];
+    const fit = profileFitsDiscover(profile, viewerCity, filters);
+    if (!fit.ok || fit.distanceKm === null) return [];
+    return [{ ...profile, distanceKm: fit.distanceKm }];
+  });
 }
 
 export function visibleCreators(state: DemoState, uid: string) {
@@ -147,14 +158,19 @@ export function like(state: DemoState, fromUserId: string, toUserId: string, now
     toUserId,
     now,
   );
+  let next: DemoState = {
+    ...state,
+    likes: result.tables.likes,
+    matches: result.tables.matches,
+    chats: result.tables.chats,
+    messages: result.tables.messages,
+  };
+  if (result.matched && result.chatId) {
+    const note = makeInboxItem('match', now, { chatId: result.chatId });
+    next = addInbox(addInbox(next, fromUserId, { ...note, id: `${note.id}_${fromUserId}` }), toUserId, { ...note, id: `${note.id}_${toUserId}` });
+  }
   return {
-    state: {
-      ...state,
-      likes: result.tables.likes,
-      matches: result.tables.matches,
-      chats: result.tables.chats,
-      messages: result.tables.messages,
-    },
+    state: next,
     matched: result.matched,
     matchId: result.matchId,
     chatId: result.chatId,
@@ -170,6 +186,76 @@ export function pass(state: DemoState, fromUserId: string, toUserId: string, now
 function assertStanding(state: DemoState, uid: string): void {
   const user = state.users.find((item) => item.uid === uid);
   if (isAccountBlocked(user?.accountStanding)) throw new Error('account-blocked');
+}
+
+function addInbox(state: DemoState, uid: string, item: InboxItem): DemoState {
+  const current = state.inboxes ?? {};
+  return { ...state, inboxes: { ...current, [uid]: [item, ...(current[uid] ?? [])].slice(0, 40) } };
+}
+
+export function saveDiscoverFilters(state: DemoState, uid: string, input: Partial<DiscoverFilters>): DemoState {
+  requireUser(state, uid);
+  const discoverFilters = normalizeDiscoverFilters(input);
+  return { ...state, users: state.users.map((user) => (user.uid === uid ? { ...user, discoverFilters } : user)) };
+}
+
+export function saveAppPreferences(state: DemoState, uid: string, input: Partial<AppPreferences>): DemoState {
+  const user = requireUser(state, uid);
+  const prefs = normalizeAppPreferences({ ...normalizeAppPreferences(user), ...input });
+  return {
+    ...state,
+    users: state.users.map((item) =>
+      item.uid === uid
+        ? {
+            ...item,
+            pushEnabled: prefs.pushEnabled,
+            emailUpdates: prefs.emailUpdates,
+            ghostMode: prefs.ghostMode,
+            lastSeenAt: prefs.ghostMode ? null : item.lastSeenAt ?? null,
+          }
+        : item,
+    ),
+  };
+}
+
+export function pulsePresence(state: DemoState, uid: string, now: string): DemoState {
+  const user = requireUser(state, uid);
+  if (isAccountBlocked(user.accountStanding)) throw new Error('account-blocked');
+  const lastSeenAt = nextLastSeen(user.ghostMode === true, now);
+  return { ...state, users: state.users.map((item) => (item.uid === uid ? { ...item, lastSeenAt } : item)) };
+}
+
+export function chatPresence(state: DemoState, uid: string, targets: string[], nowMs: number) {
+  const allowed = new Set<string>();
+  for (const chat of state.chats) {
+    if (!chat.participantIds.includes(uid)) continue;
+    for (const id of chat.participantIds) if (id !== uid) allowed.add(id);
+  }
+  for (const match of state.matches) {
+    if (!match.userIds.includes(uid)) continue;
+    for (const id of match.userIds) if (id !== uid) allowed.add(id);
+  }
+  return targets.filter((target) => allowed.has(target)).map((target) => {
+    const user = state.users.find((item) => item.uid === target);
+    const view = presenceFrom(user?.lastSeenAt, user?.ghostMode === true, nowMs);
+    return { uid: target, ...view };
+  });
+}
+
+export function listInbox(state: DemoState, uid: string): InboxItem[] {
+  return [...(state.inboxes?.[uid] ?? [])];
+}
+
+export function markInboxRead(state: DemoState, uid: string, ids: string[], now: string): DemoState {
+  const mine = state.inboxes?.[uid] ?? [];
+  const wanted = new Set(ids);
+  return {
+    ...state,
+    inboxes: {
+      ...(state.inboxes ?? {}),
+      [uid]: mine.map((item) => (wanted.size === 0 || wanted.has(item.id) ? { ...item, readAt: item.readAt ?? now } : item)),
+    },
+  };
 }
 
 function snapshotFor(state: DemoState, input: ReportInput): ReportSnapshot {
@@ -207,15 +293,16 @@ export function sendMessage(state: DemoState, uid: string, chatId: string, text:
   };
   // Subcollection: messages are stored under the chat id.
   const thread = [...(state.messages[chatId] ?? []), message];
+  const withMessage: DemoState = {
+    ...state,
+    messages: { ...state.messages, [chatId]: thread },
+    chats: state.chats.map((item) =>
+      item.id === chatId ? { ...item, lastMessageText: message.text, lastMessageAt: now } : item,
+    ),
+  };
   return {
     message,
-    state: {
-      ...state,
-      messages: { ...state.messages, [chatId]: thread },
-      chats: state.chats.map((item) =>
-        item.id === chatId ? { ...item, lastMessageText: message.text, lastMessageAt: now } : item,
-      ),
-    },
+    state: addInbox(withMessage, other, makeInboxItem('message', now, { chatId })),
   };
 }
 
@@ -599,6 +686,7 @@ export function deleteAccount(state: DemoState, uid: string): DemoState {
     payouts: state.payouts.filter((payout) => payout.creatorId !== uid),
     kycSessions: state.kycSessions.filter((session) => session.userId !== uid),
     profileDrafts: Object.fromEntries(Object.entries(draftMap(state)).filter(([id]) => id !== uid)),
+    inboxes: Object.fromEntries(Object.entries(state.inboxes ?? {}).filter(([id]) => id !== uid)),
   };
 }
 
@@ -688,7 +776,7 @@ export function resolveReport(state: DemoState, actorId: string, id: string, act
     targetUserId: report.targetUserId,
     createdAt: now,
   };
-  return {
+  let withNotes: DemoState = {
     ...next,
     reports: next.reports.map((item) =>
       item.id === id
@@ -697,6 +785,11 @@ export function resolveReport(state: DemoState, actorId: string, id: string, act
     ),
     auditLog: [...(next.auditLog ?? []), audit],
   };
+  withNotes = addInbox(withNotes, report.reporterId, makeInboxItem('report', now, { status, id: `note_report_${report.id}_${now}` }));
+  if (action === 'warn' || action === 'remove' || action === 'suspend' || action === 'ban' || action === 'restore') {
+    withNotes = addInbox(withNotes, report.targetUserId, makeInboxItem('moderation', now, { status, id: `note_mod_${report.id}_${now}` }));
+  }
+  return withNotes;
 }
 
 export function myReportStatuses(state: DemoState, uid: string, nowMs: number): MyReportStatus[] {

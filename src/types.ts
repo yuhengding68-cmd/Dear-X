@@ -38,6 +38,19 @@ export interface PrivateUser {
   warning?: { message: string; at: string; reportId: string } | null;
   /** Public profile held while the account is suspended or banned. */
   heldProfile?: DatingProfile | null;
+  /** Private discovery settings. Missing fields use the server defaults. */
+  discoverFilters?: {
+    minAge: number;
+    maxAge: number;
+    maxDistanceKm: number;
+    showGender: 'all' | 'man' | 'woman';
+  };
+  pushEnabled?: boolean;
+  emailUpdates?: boolean;
+  /** When true, the server does not store presence and does not record profile views. */
+  ghostMode?: boolean;
+  /** Server-written. Cleared while Ghost Mode is on. */
+  lastSeenAt?: string | null;
 }
 
 export interface DatingProfile {
@@ -141,6 +154,21 @@ export interface SupportTicket {
   message: string;
   status: 'open';
   createdAt: string;
+}
+
+export interface InboxItem {
+  id: string;
+  kind: 'match' | 'message' | 'report' | 'moderation';
+  createdAt: string;
+  readAt: string | null;
+  status?: string;
+  chatId?: string;
+}
+
+export interface PresenceView {
+  uid: string;
+  online: boolean;
+  minutesAgo: number | null;
 }
 
 export interface MyReportStatus {

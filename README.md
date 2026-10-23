@@ -40,6 +40,8 @@ firebase deploy --only firestore:rules,storage,functions
 
 Give an admin their role in the console after onboarding: set `users/{uid}.role` to `admin`. Clients cannot write that field. The app then copies that role onto a custom claim. Report review, bans, and support tickets are in [docs/reports-and-support.md](docs/reports-and-support.md). Set `VITE_SUPPORT_EMAIL` to the inbox users should write to. Until then the app shows `safety@dearx.app`.
 
+Discovery filters, the bell inbox, match and message push, and chat presence are in [docs/notifications-and-filters.md](docs/notifications-and-filters.md). Set `VITE_FIREBASE_VAPID_KEY` from the Cloud Messaging web push certificate, upload an APNs key for iOS, and deploy functions. The email toggle is stored only; there is no mail provider. `firestore.rules` is unchanged, so those writes go through Cloud Functions.
+
 `GEMINI_API_KEY` is read only inside Cloud Functions. It is not injected into the Vite bundle.
 
 ## What is still a stub

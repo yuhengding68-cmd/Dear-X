@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BadgeCheck, Check, ChevronLeft, Flag, Gift as GiftIcon, Mic, Phone, Plus, Send, ShieldAlert, Sticker, Video, X } from 'lucide-react';
-import type { Chat, DatingProfile, Match, Message, ReportReason } from '../types';
+import type { Chat, DatingProfile, Match, Message, PresenceView, ReportReason } from '../types';
 import { useI18n } from '../i18n';
 import { useApp } from '../state/AppProvider';
 import { Avatar, OriginalButton, comingSoon } from '../components/ui';
@@ -51,6 +51,21 @@ function formatStamp(iso: string, locale: string, t: (key: string, vars?: Record
   return `${day} ${time}`;
 }
 
+function otherId(ids: string[], mine: string | undefined): string | null {
+  if (!mine) return null;
+  return ids.find((id) => id !== mine) ?? null;
+}
+
+function presenceLine(view: PresenceView | undefined, t: (key: string, vars?: Record<string, string | number>) => string): string | null {
+  if (!view) return null;
+  if (view.online) return t('connect.online');
+  if (view.minutesAgo == null || view.minutesAgo <= 0) return null;
+  if (view.minutesAgo < 60) return t('connect.onlineMinutes', { n: view.minutesAgo });
+  const hours = Math.floor(view.minutesAgo / 60);
+  if (hours < 1 || hours >= 24) return null;
+  return t('connect.onlineHours', { n: hours });
+}
+
 function Face({ src, name, className }: { src: string | null | undefined; name: string; className: string }) {
   if (!src) {
     return <div className={`${className} bg-vibe-gradient flex items-center justify-center font-black text-white`}>{name.slice(0, 1) || '?'}</div>;
@@ -61,12 +76,13 @@ function Face({ src, name, className }: { src: string | null | undefined; name: 
 /** Original ChatListView (source-code/App.tsx). Chats and friends come from real matches and messages. */
 export function ChatListScreen() {
   const { t } = useI18n();
-  const { repo, go } = useApp();
+  const { repo, go, me } = useApp();
   const [tab, setTab] = useState<'chats' | 'friends'>('chats');
   const [chats, setChats] = useState<Array<{ chat: Chat; profile: DatingProfile | null }>>([]);
   const [friends, setFriends] = useState<Array<{ match: Match; profile: DatingProfile | null }>>([]);
   const [mePhoto, setMePhoto] = useState<string | null>(null);
   const [meName, setMeName] = useState('');
+  const [presence, setPresence] = useState<Record<string, PresenceView>>({});
 
   useEffect(() => {
     void repo.getChats().then(setChats);
@@ -76,6 +92,21 @@ export function ChatListScreen() {
       setMeName(profile?.displayName ?? '');
     });
   }, [repo]);
+
+  useEffect(() => {
+    const mine = me?.uid;
+    const ids = [
+      ...chats.map((row) => otherId(row.chat.participantIds, mine)),
+      ...friends.map((row) => otherId(row.match.userIds, mine)),
+    ].filter((id): id is string => Boolean(id));
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return;
+    void repo.getChatPresence(unique).then((rows) => {
+      const next: Record<string, PresenceView> = {};
+      for (const row of rows) next[row.uid] = row;
+      setPresence(next);
+    });
+  }, [repo, me?.uid, chats, friends]);
 
   const openChat = (chatId: string) => go({ name: 'chat', chatId });
 
@@ -130,7 +161,10 @@ export function ChatListScreen() {
       <div className="flex-1 overflow-y-auto px-4 pb-6 no-scrollbar space-y-2 mt-2">
         {tab === 'chats' ? (
           chats.length > 0 ? (
-            chats.map(({ chat, profile }) => (
+            chats.map(({ chat, profile }) => {
+              const partner = otherId(chat.participantIds, me?.uid);
+              const online = partner ? presence[partner]?.online === true : false;
+              return (
               <div
                 key={chat.id}
                 onClick={() => openChat(chat.id)}
@@ -138,7 +172,7 @@ export function ChatListScreen() {
               >
                 <div className="relative">
                   <Face src={profile?.photoUrl} name={profile?.displayName ?? ''} className="w-14 h-14 rounded-full object-cover group-hover:scale-105 transition-transform" />
-                  <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 border-2 border-[#1C1C33] rounded-full"></div>
+                  {online ? <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 border-2 border-[#1C1C33] rounded-full"></div> : null}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-center mb-1">
@@ -148,13 +182,17 @@ export function ChatListScreen() {
                   <p className="text-brand-subtext text-sm truncate">{chat.lastMessageText}</p>
                 </div>
               </div>
-            ))
+              );
+            })
           ) : (
             <div className="text-center text-brand-subtext mt-10">{t('connect.noChats')}</div>
           )
         ) : friends.length > 0 ? (
           <div className="grid grid-cols-2 gap-3">
-            {friends.map(({ match, profile }) => (
+            {friends.map(({ match, profile }) => {
+              const partner = otherId(match.userIds, me?.uid);
+              const line = presenceLine(partner ? presence[partner] : undefined, t);
+              return (
               <div
                 key={match.id}
                 onClick={() => openChat(match.chatId)}
@@ -170,7 +208,7 @@ export function ChatListScreen() {
                 </div>
                 <div className="text-center">
                   <h3 className="font-bold text-white">{profile?.displayName}</h3>
-                  <p className="text-xs text-brand-subtext">{t('connect.onlineAgo')}</p>
+                  {line ? <p className="text-xs text-brand-subtext">{line}</p> : null}
                 </div>
                 <button
                   type="button"
@@ -183,7 +221,8 @@ export function ChatListScreen() {
                   {t('connect.sayHi')}
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="text-center text-brand-subtext mt-10">{t('connect.noFriends')}</div>
@@ -211,6 +250,7 @@ export function ChatThreadScreen({ chatId }: { chatId: string }) {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [reportingId, setReportingId] = useState<string | null>(null);
+  const [presence, setPresence] = useState<PresenceView | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const load = () => {
@@ -224,6 +264,11 @@ export function ChatThreadScreen({ chatId }: { chatId: string }) {
   };
 
   useEffect(load, [repo, chatId, me]);
+
+  useEffect(() => {
+    if (!otherId) return;
+    void repo.getChatPresence([otherId]).then((rows) => setPresence(rows[0] ?? null));
+  }, [repo, otherId]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -244,6 +289,7 @@ export function ChatThreadScreen({ chatId }: { chatId: string }) {
 
   const stamp = messages[0] ? formatStamp(messages[0].createdAt, locale, t) : t('connect.today', { time: '' }).trim();
   const name = partner?.displayName ?? '';
+  const line = presenceLine(presence ?? undefined, t);
 
   return (
     <div className="flex flex-col h-full bg-[#12122A]">
@@ -254,13 +300,16 @@ export function ChatThreadScreen({ chatId }: { chatId: string }) {
           </button>
           <div className="relative">
             <Face src={partner?.photoUrl} name={name} className="w-10 h-10 rounded-full object-cover border border-white/10" />
-            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 rounded-full border border-[#12122A]"></div>
+            {presence?.online ? <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 rounded-full border border-[#12122A]"></div> : null}
           </div>
           <div>
             <h3 className="font-bold text-white leading-tight">{name}</h3>
-            <p className="text-xs text-brand-subtext flex items-center gap-1">
-              {t('connect.online')} <span className="w-1 h-1 bg-green-500 rounded-full"></span>
-            </p>
+            {line ? (
+              <p data-testid="chat-presence" className="text-xs text-brand-subtext flex items-center gap-1">
+                {line}
+                {presence?.online ? <span className="w-1 h-1 bg-green-500 rounded-full"></span> : null}
+              </p>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-3">

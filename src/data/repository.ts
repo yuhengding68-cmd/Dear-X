@@ -1,4 +1,6 @@
 import type { NewProfilePhoto, ProfileEditResult, ProfileEditor, ProfileTextInput } from '../domain/profileEdit';
+import type { AppPreferences } from '../domain/activity';
+import type { DiscoverFilters } from '../domain/discover';
 import type { ReportAction } from '../domain/safetyQueue';
 import type {
   AuthSession,
@@ -19,7 +21,9 @@ import type {
   PrivateUser,
   Purchase,
   PurchaseInput,
+  InboxItem,
   MyReportStatus,
+  PresenceView,
   Report,
   ReportInput,
   ReportStatus,
@@ -69,6 +73,14 @@ export interface Repository {
   /** Approved public profile only. No phone, date of birth, or draft text. */
   getPublicProfile(uid: string): Promise<DatingProfile | null>;
   getDiscovery(): Promise<DatingProfile[]>;
+  getDiscoverFilters(): Promise<DiscoverFilters>;
+  saveDiscoverFilters(input: DiscoverFilters): Promise<DiscoverFilters>;
+  saveAppPreferences(input: AppPreferences): Promise<AppPreferences>;
+  listNotifications(): Promise<InboxItem[]>;
+  markNotificationsRead(ids: string[]): Promise<void>;
+  pulsePresence(): Promise<void>;
+  getChatPresence(uids: string[]): Promise<PresenceView[]>;
+  registerPushToken(token: string): Promise<void>;
   likeUser(toUserId: string): Promise<LikeOutcome>;
   passUser(toUserId: string): Promise<void>;
   getMatches(): Promise<Array<{ match: Match; profile: DatingProfile | null }>>;

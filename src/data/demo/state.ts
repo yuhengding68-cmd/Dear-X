@@ -17,6 +17,7 @@ import type {
   PrivateUser,
   Purchase,
   Report,
+  InboxItem,
   SupportTicket,
 } from '../../types';
 
@@ -45,6 +46,7 @@ export interface DemoState {
   profileDrafts?: Record<string, ProfileEditorDraft>;
   auditLog?: ModerationAudit[];
   supportTickets?: SupportTicket[];
+  inboxes?: Record<string, InboxItem[]>;
 }
 
 export const DEMO_DB_KEY = 'dearx.demo.db.v1';

@@ -314,7 +314,6 @@ const posts: CreatorPost[] = [
 /** Fixed fixtures. Matching is mutual only; nothing here is a random roll. */
 export function createSeedState(): DemoState {
   return {
-    users,
     profiles,
     likes: [
       { id: 'user-mei_user-alex', fromUserId: 'user-mei', toUserId: 'user-alex', createdAt: NOW },
@@ -395,6 +394,13 @@ export function createSeedState(): DemoState {
       },
     ],
     ageDenials: [],
+    inboxes: {
+      'user-alex': [
+        { id: 'note-match-alex', kind: 'match', createdAt: NOW, readAt: null, chatId: 'chat_user-alex_user-mei' },
+        { id: 'note-report-alex', kind: 'report', createdAt: '2026-10-18T00:00:00.000Z', readAt: null, status: 'open' },
+      ],
+    },
+    users: users.map((user) => (user.uid === 'user-mei' ? { ...user, lastSeenAt: new Date().toISOString(), ghostMode: false } : user)),
   };
 }
 

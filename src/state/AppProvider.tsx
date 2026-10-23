@@ -36,6 +36,9 @@ interface AppContextValue {
   finishOnboarding: () => Promise<void>;
   blockForAge: (dateOfBirth: string) => Promise<void>;
   signOut: () => Promise<void>;
+  discoverNonce: number;
+  refreshDiscovery: () => void;
+  reloadMe: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -64,7 +67,18 @@ export function AppProvider({ repo, children }: { repo: Repository; children: Re
   const [stack, setStack] = useState<Route[]>([{ name: 'landing' }]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [discoverNonce, setDiscoverNonce] = useState(0);
   const route = stack[stack.length - 1] ?? { name: 'landing' };
+
+  useEffect(() => {
+    if (!session?.uid || !me || me.ghostMode === true) return;
+    const beat = () => {
+      void repo.pulsePresence().catch(() => undefined);
+    };
+    beat();
+    const timer = window.setInterval(beat, 45_000);
+    return () => window.clearInterval(timer);
+  }, [repo, session?.uid, me?.uid, me?.ghostMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,8 +179,14 @@ export function AppProvider({ repo, children }: { repo: Repository; children: Re
         setMe(null);
         setStack([{ name: 'landing' }]);
       },
+      discoverNonce,
+      refreshDiscovery: () => setDiscoverNonce((current) => current + 1),
+      reloadMe: async () => {
+        const user = await repo.getMe();
+        setMe(user);
+      },
     }),
-    [repo, session, me, booting, route, error, notice],
+    [repo, session, me, booting, route, error, notice, discoverNonce],
   );
 
   return <AppContext.Provider value={api}>{children}</AppContext.Provider>;

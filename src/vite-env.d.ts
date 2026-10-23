@@ -15,4 +15,6 @@ interface ImportMetaEnv {
   readonly VITE_FIREBASE_APPCHECK_DEBUG_TOKEN?: string;
   /** Public support address shown in Help. Not a secret. */
   readonly VITE_SUPPORT_EMAIL?: string;
+  /** Public web push certificate key from Firebase Cloud Messaging. Not a secret. */
+  readonly VITE_FIREBASE_VAPID_KEY?: string;
 }

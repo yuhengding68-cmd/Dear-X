@@ -1,4 +1,4 @@
-import { getApp, getApps, initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp, type FirebaseApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   OAuthProvider,
@@ -57,14 +57,18 @@ import type {
   PrivateUser,
   Purchase,
   PurchaseInput,
+  InboxItem,
   MyReportStatus,
+  PresenceView,
   Report,
   ReportInput,
   ReportStatus,
   SupportTicket,
 } from '../types';
 import { firebaseErrorCode, mapFirebaseAuthCode, retryAfterSeconds } from '../domain/authErrors';
-import { isAccountBlocked, publishedSupportEmail, type ReportAction } from '../domain/safetyQueue';
+import type { AppPreferences } from '../domain/activity';
+import type { DiscoverFilters } from '../domain/discover';
+import { publishedSupportEmail, type ReportAction } from '../domain/safetyQueue';
 import { ensureAppCheck } from './appCheck';
 import { RepoError } from './errors';
 import { loadIosNativeAuth } from './nativeAuth';
@@ -109,6 +113,21 @@ function authFailure(error: unknown): RepoError {
     return new RepoError('too-many-requests', String(retryAfterSeconds(error) ?? 30));
   }
   return new RepoError(mapped, mapped);
+}
+
+async function registerWebPush(
+  app: FirebaseApp,
+  call: <Req, Res>(name: string) => (data: Req) => Promise<{ data: Res }>,
+): Promise<void> {
+  const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
+  if (!vapidKey || typeof window === 'undefined' || !('serviceWorker' in navigator) || !('Notification' in window)) return;
+  const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (permission !== 'granted') return;
+  const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+  const { getMessaging, getToken } = await import('firebase/messaging');
+  const token = await getToken(getMessaging(app), { vapidKey, serviceWorkerRegistration: registration });
+  if (!token) return;
+  await call<{ token: string }, { ok: boolean }>('registerPushToken')({ token });
 }
 
 function sessionFromUser(user: User, placeholderAuth: boolean): AuthSession {
@@ -364,26 +383,75 @@ export function createFirebaseRepository(config: FirebaseWebConfig): Repository 
       return snap.exists() ? (snap.data() as DatingProfile) : null;
     },
     async getDiscovery() {
-      const uid = currentUid();
-      const meSnap = await getDoc(doc(db, 'users', uid));
-      if (isAccountBlocked(meSnap.data()?.accountStanding as 'active' | 'warned' | 'suspended' | 'banned' | undefined)) return [];
-      const [profiles, blocks, passes, swipes, matches] = await Promise.all([
-        getDocs(collection(db, 'profiles')),
-        hiddenIds(uid),
-        getDocs(query(collection(db, 'passes'), where('fromUserId', '==', uid))),
-        getDocs(query(collection(db, 'swipes'), where('fromUserId', '==', uid))),
-        getDocs(query(collection(db, 'matches'), where('userIds', 'array-contains', uid))),
-      ]);
-      const skip = new Set<string>([uid, ...blocks]);
-      passes.docs.forEach((item) => skip.add(String(item.data().toUserId)));
-      swipes.docs.forEach((item) => skip.add(String(item.data().toUserId)));
-      matches.docs.forEach((item) => {
-        const ids = item.data().userIds as string[];
-        ids.forEach((id) => skip.add(id));
-      });
-      return profiles.docs
-        .map((item) => item.data() as DatingProfile)
-        .filter((profile) => profile.uid && !skip.has(profile.uid));
+      try {
+        const result = await call<Record<string, never>, { profiles: DatingProfile[] }>('listDiscovery')({});
+        return result.data.profiles;
+      } catch (error) {
+        throw asError(error, 'discover');
+      }
+    },
+    async getDiscoverFilters() {
+      try {
+        const result = await call<Record<string, never>, { filters: DiscoverFilters }>('getDiscoverFilters')({});
+        return result.data.filters;
+      } catch (error) {
+        throw asError(error, 'discover');
+      }
+    },
+    async saveDiscoverFilters(input) {
+      try {
+        const result = await call<DiscoverFilters, { filters: DiscoverFilters }>('saveDiscoverFilters')(input);
+        return result.data.filters;
+      } catch (error) {
+        throw asError(error, 'discover');
+      }
+    },
+    async saveAppPreferences(input) {
+      try {
+        const result = await call<AppPreferences, { preferences: AppPreferences }>('saveAppPreferences')(input);
+        if (input.pushEnabled) await registerWebPush(app, call).catch(() => undefined);
+        else await call<{ token: string }, { ok: boolean }>('registerPushToken')({ token: '' }).catch(() => undefined);
+        return result.data.preferences;
+      } catch (error) {
+        throw asError(error, 'preferences');
+      }
+    },
+    async listNotifications() {
+      try {
+        const result = await call<Record<string, never>, { items: InboxItem[] }>('listNotifications')({});
+        return result.data.items;
+      } catch (error) {
+        throw asError(error, 'inbox');
+      }
+    },
+    async markNotificationsRead(ids) {
+      try {
+        await call<{ ids: string[] }, { ok: boolean }>('markNotificationsRead')({ ids });
+      } catch (error) {
+        throw asError(error, 'inbox');
+      }
+    },
+    async pulsePresence() {
+      try {
+        await call<Record<string, never>, { ok: boolean }>('pulsePresence')({});
+      } catch (error) {
+        throw asError(error, 'presence');
+      }
+    },
+    async getChatPresence(uids) {
+      try {
+        const result = await call<{ uids: string[] }, { presence: PresenceView[] }>('getChatPresence')({ uids });
+        return result.data.presence;
+      } catch (error) {
+        throw asError(error, 'presence');
+      }
+    },
+    async registerPushToken(token) {
+      try {
+        await call<{ token: string }, { ok: boolean }>('registerPushToken')({ token });
+      } catch (error) {
+        throw asError(error, 'push');
+      }
     },
     async likeUser(toUserId) {
       try {

@@ -18,7 +18,9 @@ import {
 } from './profileEdit';
 import { adminClaimAllowed, isAccountBlocked, publishedSupportEmail, reportSla, requireAdminClaim, supportTicketInput } from './safetyQueue';
 import { normalizePhone } from './phone';
-import { addProfilePhoto, completeOnboarding, createPost, createSupportTicket, deleteAccount, deleteProfilePhoto, exportData, fileReport, like, myReportStatuses, presentReport, reorderProfilePhotos, resolveReport, sendMessage, submitProfileText, visibleCreators, visibleProfiles } from '../data/demo/logic';
+import { inboxLeaksPrivate, makeInboxItem, maySendEmail, normalizeAppPreferences, presenceFrom, pushCopy } from './activity';
+import { coarseCityKm, normalizeDiscoverFilters, profileFitsDiscover } from './discover';
+import { addProfilePhoto, chatPresence, completeOnboarding, createPost, createSupportTicket, deleteAccount, deleteProfilePhoto, exportData, fileReport, like, listInbox, myReportStatuses, presentReport, pulsePresence, reorderProfilePhotos, resolveReport, saveAppPreferences, saveDiscoverFilters, sendMessage, submitProfileText, visibleCreators, visibleProfiles } from '../data/demo/logic';
 import { createSeedState } from '../data/demo/seed';
 import type { Creator } from '../types';
 
@@ -406,5 +408,47 @@ assert.equal(ticket.ticket.supportEmail, 'help@example.com');
 assert.equal(ticket.ticket.status, 'open');
 assert.throws(() => createSupportTicket(seed, 'user-alex', 'help@example.com', 'H', 'x', '2026-10-23T11:00:00.000Z'));
 assert.throws(() => createSupportTicket(banned, 'user-lin', 'help@example.com', 'Hi', 'Need a hand', '2026-10-23T12:02:00.000Z'));
+
+assert.equal(normalizeDiscoverFilters({ minAge: 16, maxAge: 40, maxDistanceKm: 500, showGender: 'woman' }).minAge, 18);
+assert.equal(normalizeDiscoverFilters({ minAge: 16, maxAge: 40, maxDistanceKm: 500, showGender: 'woman' }).maxDistanceKm, 100);
+assert.equal(profileFitsDiscover({ age: 17, gender: 'woman', city: 'Sydney' }, 'Sydney', normalizeDiscoverFilters(null)).ok, false);
+const sydneyFilters = normalizeDiscoverFilters({ maxDistanceKm: 100, showGender: 'all' });
+assert.equal(profileFitsDiscover({ age: 27, gender: 'man', city: 'Sydney' }, 'Sydney', sydneyFilters).distanceKm, 0);
+assert.equal(profileFitsDiscover({ age: 24, gender: 'woman', city: 'Melbourne' }, 'Sydney', sydneyFilters).ok, false);
+assert.equal(coarseCityKm('Sydney', 'Melbourne'), 710);
+assert.equal(profileFitsDiscover({ age: 22, gender: 'woman', city: 'Gold Coast' }, 'Brisbane', normalizeDiscoverFilters({ maxDistanceKm: 100 })).ok, true);
+
+const women = saveDiscoverFilters(seed, 'user-alex', { minAge: 18, maxAge: 50, maxDistanceKm: 100, showGender: 'woman' });
+const womenDeck = visibleProfiles(women, 'user-alex');
+assert.equal(womenDeck.some((profile) => profile.uid === 'user-jun'), false);
+const sophie = womenDeck.find((profile) => profile.uid === 'user-sophie');
+assert.ok(sophie);
+assert.equal(sophie.distanceKm, 0);
+
+const messageCopy = pushCopy('message');
+const messageNote = makeInboxItem('message', '2026-10-23T03:00:00.000Z', { chatId: 'chat_user-alex_user-mei' });
+assert.equal(messageCopy.body, 'You have a new message.');
+assert.equal(inboxLeaksPrivate(messageNote), false);
+assert.equal(JSON.stringify(messageNote).includes('coffee'), false);
+const sentNote = sendMessage(seed, 'user-alex', 'chat_user-alex_user-mei', 'Want to meet for coffee this week?', '2026-10-23T03:00:00.000Z');
+const meiInbox = listInbox(sentNote.state, 'user-mei');
+assert.equal(meiInbox.some((item) => item.kind === 'message'), true);
+assert.equal(meiInbox.some((item) => JSON.stringify(item).includes('coffee')), false);
+assert.equal(meiInbox.every((item) => inboxLeaksPrivate(item) === false), true);
+
+const seenAt = Date.parse('2026-10-23T12:00:00.000Z');
+assert.equal(presenceFrom('2026-10-23T11:59:30.000Z', false, seenAt).online, true);
+assert.equal(presenceFrom('2026-10-23T11:55:00.000Z', false, seenAt).minutesAgo, 5);
+assert.equal(presenceFrom('2026-10-23T11:59:30.000Z', true, seenAt).online, false);
+assert.equal(presenceFrom('2026-10-23T11:59:30.000Z', true, seenAt).minutesAgo, null);
+const ghosted = saveAppPreferences(seed, 'user-mei', { ghostMode: true, pushEnabled: true, emailUpdates: false });
+const pulsed = pulsePresence(ghosted, 'user-mei', '2026-10-23T12:00:00.000Z');
+assert.equal(pulsed.users.find((user) => user.uid === 'user-mei')?.lastSeenAt ?? null, null);
+const hiddenPresence = chatPresence(pulsed, 'user-alex', ['user-mei'], seenAt);
+assert.equal(hiddenPresence[0]?.online, false);
+assert.equal(hiddenPresence[0]?.minutesAgo, null);
+assert.equal('ghostMode' in (hiddenPresence[0] ?? {}), false);
+assert.equal(maySendEmail(normalizeAppPreferences(undefined)), false);
+assert.equal(maySendEmail(normalizeAppPreferences({ emailUpdates: true })), true);
 
 console.log('domain tests passed');

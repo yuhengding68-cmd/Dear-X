@@ -2,6 +2,8 @@ import { denialKey } from '../../domain/age';
 import { decidePhoneSignIn, EMPTY_PHONE_LIMIT, PHONE_SIGN_IN_LIMITS, type PhoneLimitState } from '../../domain/phoneSignInLimit';
 import { createStubIapToken } from '../../domain/commerce';
 import type { NewProfilePhoto, ProfileTextInput } from '../../domain/profileEdit';
+import { normalizeAppPreferences, type AppPreferences } from '../../domain/activity';
+import { normalizeDiscoverFilters, type DiscoverFilters } from '../../domain/discover';
 import { isAccountBlocked, publishedSupportEmail } from '../../domain/safetyQueue';
 import type { ReportAction } from '../../domain/safetyQueue';
 import type {
@@ -27,7 +29,10 @@ import {
   deleteAccount,
   exportData,
   fileReport,
+  chatPresence,
   like,
+  listInbox,
+  markInboxRead,
   myReportStatuses,
   pass,
   profileEditor,
@@ -35,8 +40,11 @@ import {
   profileFor,
   reorderProfilePhotos,
   submitProfileText,
+  pulsePresence,
   purchase,
   requestPayout,
+  saveAppPreferences,
+  saveDiscoverFilters,
   resolveReport,
   reviewPost,
   reviewReport,
@@ -292,6 +300,41 @@ export function createDemoRepository(): Repository {
     async getDiscovery() {
       refresh();
       return visibleProfiles(state, uid());
+    },
+    async getDiscoverFilters() {
+      refresh();
+      const me = state.users.find((user) => user.uid === uid());
+      return normalizeDiscoverFilters(me?.discoverFilters);
+    },
+    async saveDiscoverFilters(input: DiscoverFilters) {
+      state = saveDiscoverFilters(state, uid(), input);
+      persist();
+      return normalizeDiscoverFilters(input);
+    },
+    async saveAppPreferences(input: AppPreferences) {
+      state = saveAppPreferences(state, uid(), input);
+      persist();
+      const me = state.users.find((user) => user.uid === uid());
+      return normalizeAppPreferences(me);
+    },
+    async listNotifications() {
+      refresh();
+      return listInbox(state, uid());
+    },
+    async markNotificationsRead(ids: string[]) {
+      state = markInboxRead(state, uid(), ids, nowIso());
+      persist();
+    },
+    async pulsePresence() {
+      state = pulsePresence(state, uid(), nowIso());
+      persist();
+    },
+    async getChatPresence(uids: string[]) {
+      refresh();
+      return chatPresence(state, uid(), uids, Date.now());
+    },
+    async registerPushToken() {
+      return undefined;
     },
     async likeUser(toUserId: string) {
       try {

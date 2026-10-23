@@ -28,6 +28,16 @@ import {
 import { LiveIapVerifier, StubIapVerifier, iapStubMode, mintStubReceipt, type IapReceipt } from './iap';
 import { createKycVendor, stubKycCompletionAllowed, stubsAllowed } from './kycVendor';
 import { createPayoutProvider } from './payoutProvider';
+import {
+  makeInboxItem,
+  nextLastSeen,
+  normalizeAppPreferences,
+  notifyUser,
+  presenceFrom,
+  readInboxItems,
+  type InboxItem,
+} from './activity';
+import { normalizeDiscoverFilters, profileFitsDiscover } from './discover';
 
 initializeApp();
 
@@ -474,6 +484,11 @@ export const likeUser = onCall(callable, async (request) => {
       });
     }
   });
+  if (matched && chatId) {
+    const note = makeInboxItem('match', now, { chatId });
+    await safeNotify(uid, { ...note, id: `${note.id}_${uid}` });
+    await safeNotify(toUserId, { ...note, id: `${note.id}_${toUserId}` });
+  }
   return { matched, matchId, chatId };
 });
 
@@ -499,6 +514,7 @@ export const sendMessage = onCall(moderated, async (request) => {
   const message = { id: `msg_${crypto.randomUUID()}`, chatId, senderId: uid, text, createdAt: now };
   await db.collection(`chats/${chatId}/messages`).doc(message.id).set(message);
   await db.doc(`chats/${chatId}`).update({ lastMessageText: text, lastMessageAt: now });
+  await safeNotify(other, makeInboxItem('message', now, { chatId, id: `note_message_${message.id}` }));
   return { message };
 });
 
@@ -956,6 +972,17 @@ export const resolveReport = onCall(callable, async (request) => {
     targetUserId,
     createdAt: now,
   });
+  const reporterId = String(snap.get('reporterId') ?? '');
+  if (reporterId && reporterId !== DELETED) {
+    await safeNotify(reporterId, makeInboxItem('report', now, { status, id: `note_report_${id}_${Date.now()}` }));
+  }
+  if (
+    targetUserId &&
+    targetUserId !== DELETED &&
+    (chosen === 'warn' || chosen === 'remove' || chosen === 'suspend' || chosen === 'ban' || chosen === 'restore')
+  ) {
+    await safeNotify(targetUserId, makeInboxItem('moderation', now, { status, id: `note_moderation_${id}_${Date.now()}` }));
+  }
   return { ok: true, status };
 });
 
@@ -1293,6 +1320,195 @@ export const deleteProfilePhoto = onCall(callable, async (request) => {
   return { editor: editorFrom(profile, next, null) };
 });
 
+async function safeNotify(uid: string, item: InboxItem): Promise<void> {
+  try {
+    await notifyUser(uid, item);
+  } catch {
+    /* A missing inbox or FCM setup must not undo the match, message, or review. */
+  }
+}
+
+function stringIds(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0 && item.length <= 128).slice(0, limit);
+}
+
+export const getDiscoverFilters = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const user = await db.doc(`users/${uid}`).get();
+  return { filters: normalizeDiscoverFilters(user.get('discoverFilters') as Partial<ReturnType<typeof normalizeDiscoverFilters>> | undefined) };
+});
+
+export const saveDiscoverFilters = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const filters = normalizeDiscoverFilters(payload(request) as Partial<ReturnType<typeof normalizeDiscoverFilters>>);
+  await db.doc(`users/${uid}`).set({ discoverFilters: filters }, { merge: true });
+  return { filters };
+});
+
+export const listDiscovery = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const [userSnap, profileSnap, hiddenSnap, passSnap, likeSnap, swipeSnap, matchSnap, profileSnapAll] = await Promise.all([
+    db.doc(`users/${uid}`).get(),
+    db.doc(`profiles/${uid}`).get(),
+    db.collection(`blockEdges/${uid}/hidden`).get(),
+    db.collection('passes').where('fromUserId', '==', uid).get(),
+    db.collection('likes').where('fromUserId', '==', uid).get(),
+    db.collection('swipes').where('fromUserId', '==', uid).get(),
+    db.collection('matches').where('userIds', 'array-contains', uid).get(),
+    db.collection('profiles').limit(200).get(),
+  ]);
+  const viewerCity = String(profileSnap.get('city') ?? '');
+  const filters = normalizeDiscoverFilters(userSnap.get('discoverFilters') as Partial<ReturnType<typeof normalizeDiscoverFilters>> | undefined);
+  const skip = new Set<string>([uid, ...hiddenSnap.docs.map((item) => item.id)]);
+  for (const snap of [passSnap, likeSnap, swipeSnap]) {
+    for (const item of snap.docs) {
+      const other = item.get('toUserId');
+      if (typeof other === 'string') skip.add(other);
+    }
+  }
+  for (const match of matchSnap.docs) {
+    const ids = match.get('userIds');
+    if (!Array.isArray(ids)) continue;
+    for (const id of ids) if (typeof id === 'string' && id !== uid) skip.add(id);
+  }
+  const candidates = profileSnapAll.docs.filter((item) => !skip.has(item.id));
+  const userSnaps: DocumentSnapshot[] = [];
+  for (let index = 0; index < candidates.length; index += 50) {
+    const slice = candidates.slice(index, index + 50);
+    userSnaps.push(...(await db.getAll(...slice.map((item) => db.doc(`users/${item.id}`)))));
+  }
+  const users = new Map(userSnaps.map((item) => [item.id, item]));
+  const profiles: Array<ReturnType<typeof profileShape>> = [];
+  for (const item of candidates) {
+    const account = users.get(item.id);
+    if (!account?.exists || account.get('onboardingComplete') !== true || account.get('role') === 'admin') continue;
+    const standing = String(account.get('accountStanding') ?? 'active');
+    if (standing === 'suspended' || standing === 'banned') continue;
+    const data = item.data();
+    const fit = profileFitsDiscover(
+      {
+        age: typeof data.age === 'number' ? data.age : 0,
+        gender: String(data.gender ?? ''),
+        city: String(data.city ?? ''),
+      },
+      viewerCity,
+      filters,
+    );
+    if (!fit.ok || fit.distanceKm === null) continue;
+    const card = { ...profileShape(item.id, data), distanceKm: fit.distanceKm };
+    for (const key of PRIVATE_PROFILE_KEYS) {
+      if (key in card) throw new HttpsError('internal', 'Public profile cannot store private account fields.');
+    }
+    profiles.push(card);
+  }
+  return { profiles };
+});
+
+export const saveAppPreferences = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const current = await db.doc(`users/${uid}`).get();
+  const input = payload(request);
+  const preferences = normalizeAppPreferences({
+    pushEnabled: typeof input.pushEnabled === 'boolean' ? input.pushEnabled : current.get('pushEnabled') !== false,
+    emailUpdates: typeof input.emailUpdates === 'boolean' ? input.emailUpdates : current.get('emailUpdates') === true,
+    ghostMode: typeof input.ghostMode === 'boolean' ? input.ghostMode : current.get('ghostMode') === true,
+  });
+  const patch: Record<string, unknown> = {
+    pushEnabled: preferences.pushEnabled,
+    emailUpdates: preferences.emailUpdates,
+    ghostMode: preferences.ghostMode,
+  };
+  if (preferences.ghostMode) patch.lastSeenAt = null;
+  if (!preferences.pushEnabled) patch.pushTokens = [];
+  await db.doc(`users/${uid}`).set(patch, { merge: true });
+  return { preferences };
+});
+
+export const registerPushToken = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const rawToken = payload(request).token;
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  const ref = db.doc(`users/${uid}`);
+  const user = await ref.get();
+  if (!token || token.length > 4096 || user.get('pushEnabled') === false) {
+    await ref.set({ pushTokens: [] }, { merge: true });
+    return { ok: true };
+  }
+  const raw = user.get('pushTokens');
+  const existing = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string' && item.length > 0) : [];
+  await ref.set({ pushTokens: [token, ...existing.filter((item) => item !== token)].slice(0, 5) }, { merge: true });
+  return { ok: true };
+});
+
+export const listNotifications = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const snap = await db.doc(`inboxes/${uid}`).get();
+  return { items: readInboxItems(snap.get('items')) };
+});
+
+export const markNotificationsRead = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  const ids = stringIds(payload(request).ids, 40);
+  const now = new Date().toISOString();
+  const ref = db.doc(`inboxes/${uid}`);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const wanted = new Set(ids);
+    const items = readInboxItems(snap.get('items')).map((item) => {
+      if (item.readAt) return item;
+      if (wanted.size === 0 || wanted.has(item.id)) return { ...item, readAt: now };
+      return item;
+    });
+    tx.set(ref, { items }, { merge: true });
+  });
+  return { ok: true };
+});
+
+export const pulsePresence = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const user = await db.doc(`users/${uid}`).get();
+  const ghostMode = user.get('ghostMode') === true;
+  const lastSeenAt = nextLastSeen(ghostMode, new Date().toISOString());
+  await db.doc(`users/${uid}`).set({ lastSeenAt }, { merge: true });
+  return { ok: true };
+});
+
+export const getChatPresence = onCall(callable, async (request) => {
+  const uid = uidOf(request);
+  await assertCanParticipate(uid);
+  const wanted = new Set(stringIds(payload(request).uids, 40));
+  wanted.delete(uid);
+  const [chats, matches] = await Promise.all([
+    db.collection('chats').where('participantIds', 'array-contains', uid).get(),
+    db.collection('matches').where('userIds', 'array-contains', uid).get(),
+  ]);
+  const allowed = new Set<string>();
+  for (const chat of chats.docs) {
+    const ids = chat.get('participantIds');
+    if (!Array.isArray(ids)) continue;
+    for (const id of ids) if (typeof id === 'string' && id !== uid) allowed.add(id);
+  }
+  for (const match of matches.docs) {
+    const ids = match.get('userIds');
+    if (!Array.isArray(ids)) continue;
+    for (const id of ids) if (typeof id === 'string' && id !== uid) allowed.add(id);
+  }
+  const targets = [...wanted].filter((id) => allowed.has(id));
+  if (targets.length === 0) return { presence: [] };
+  const snaps = await db.getAll(...targets.map((id) => db.doc(`users/${id}`)));
+  const nowMs = Date.now();
+  const presence = snaps.map((snap) => {
+    const lastSeenAt = typeof snap.get('lastSeenAt') === 'string' ? snap.get('lastSeenAt') : null;
+    const view = presenceFrom(lastSeenAt, snap.get('ghostMode') === true, nowMs);
+    return { uid: snap.id, online: view.online, minutesAgo: view.minutesAgo };
+  });
+  return { presence };
+});
+
 export const deleteAccount = onCall(callable, async (request) => {
   const uid = uidOf(request);
   const chats = await db.collection('chats').where('participantIds', 'array-contains', uid).get();
@@ -1313,6 +1529,7 @@ export const deleteAccount = onCall(callable, async (request) => {
   await Promise.all([
     db.doc(`users/${uid}`).delete(),
     db.doc(`profiles/${uid}`).delete(),
+    db.doc(`inboxes/${uid}`).delete(),
     db.doc(`creators/${uid}`).delete(),
     db.doc(`balances/${uid}`).delete(),
     deleteQuery(db.collection('creatorPosts').where('creatorId', '==', uid)),

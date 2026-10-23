@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Bell, Compass, Filter, Gem, MessageCircle, User as UserIcon, Wallet } from 'lucide-react';
+import type { InboxItem } from '../types';
 import { ComingSoonToast, comingSoon, LanguageButton, Logo, LogoX, ModePill, TopBar } from '../components/ui';
 import { useI18n } from '../i18n';
 import { useApp, type Tab } from '../state/AppProvider';
@@ -8,6 +9,8 @@ import { AuthScreen } from './AuthScreen';
 import { ChatListScreen, ChatThreadScreen, MatchesScreen } from './ChatScreens';
 import { CreatorListScreen, CreatorProfileScreen, StudioScreen } from './CreatorsScreen';
 import { DiscoverScreen } from './DiscoverScreen';
+import { FilterSheet } from './FilterSheet';
+import { NotificationCenter } from './NotificationCenter';
 import { LandingScreen } from './LandingScreen';
 import { LegalScreen } from './LegalScreen';
 import { OnboardingScreen } from './OnboardingScreen';
@@ -23,6 +26,18 @@ const TABS: Tab[] = ['discover', 'matches', 'chats', 'creators', 'safety'];
 export function Root() {
   const { t } = useI18n();
   const app = useApp();
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [unread, setUnread] = useState(false);
+
+  useEffect(() => {
+    if (!app.session) return;
+    void app.repo.listNotifications().then((items) => {
+      setInbox(items);
+      setUnread(items.some((item) => !item.readAt));
+    });
+  }, [app.session, app.repo, inboxOpen]);
   if (app.booting) {
     return <p className="px-6 py-16 text-white/60">{t('common.loading')}</p>;
   }
@@ -74,7 +89,7 @@ export function Root() {
           </div>
           <div className="flex items-center gap-3">
             {tab === 'discover' && (
-              <button type="button" onClick={comingSoon} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center border border-white/10 backdrop-blur-sm active:scale-95 transition-transform hover:bg-white/20">
+              <button type="button" onClick={() => setFilterOpen(true)} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center border border-white/10 backdrop-blur-sm active:scale-95 transition-transform hover:bg-white/20">
                 <Filter className="w-4 h-4 text-white" />
               </button>
             )}
@@ -84,8 +99,9 @@ export function Root() {
               <span className="text-sm font-bold text-white">0</span>
               {app.repo.mode === 'demo' ? <span className="text-[9px] font-bold text-brand-subtext uppercase">{t('look.demoBalance')}</span> : null}
             </button>
-            <button type="button" onClick={comingSoon} className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center relative">
+            <button type="button" data-testid="notification-bell" onClick={() => setInboxOpen(true)} className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center relative">
               <Bell className="w-5 h-5 text-white" />
+              {unread ? <span data-testid="notification-unread" className="absolute top-2 right-2 h-2 w-2 rounded-full bg-red-500" /> : null}
             </button>
           </div>
         </header>}
@@ -122,6 +138,25 @@ export function Root() {
           </nav>
         )}
         <ComingSoonToast />
+        {filterOpen ? <FilterSheet onClose={() => setFilterOpen(false)} /> : null}
+        {inboxOpen ? (
+          <NotificationCenter
+            items={inbox}
+            onClose={() => {
+              const ids = inbox.filter((item) => !item.readAt).map((item) => item.id);
+              if (ids.length > 0) {
+                void app.repo.markNotificationsRead(ids).then(() => setUnread(false));
+              }
+              setInboxOpen(false);
+            }}
+            onOpen={(item) => {
+              if (item.chatId && (item.kind === 'match' || item.kind === 'message')) {
+                setInboxOpen(false);
+                app.go({ name: 'chat', chatId: item.chatId });
+              }
+            }}
+          />
+        ) : null}
       </div>
     );
   }
